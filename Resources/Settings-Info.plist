@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>MenuCraft</string>
+	<key>CFBundleExecutable</key>
+	<string>MenuCraft</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.menucraft.app.settings</string>
+	<key>CFBundleName</key>
+	<string>MenuCraft</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.5.1</string>
+	<key>CFBundleURLTypes</key>
+	<array/>
+	<key>CFBundleVersion</key>
+	<string>12</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>MenuCraft需要控制您选择的终端，让它进入当前文件夹。</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>在桌面创建您请求的文件或替身。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>在您选择的文稿目录中创建、移动和整理文件。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>在您选择的下载目录中整理文件。</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+</dict>
+</plist>

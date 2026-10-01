@@ -1,0 +1,16 @@
+MenuCraft
+Copyright 2026 czheng1108 and MenuCraft contributors.
+
+Original MenuCraft code, build scripts and documentation are licensed under
+Apache License 2.0. Third-party components retain their own licenses.
+
+The scroll engine adapts Scroll Reverser 1.9 by Nick Moore / Pilotmoon Software.
+Original copyright and modification notices remain in Sources/Scroll/MCScrollEngine.m.
+See ThirdParty/ScrollReverser/LICENSE and NOTICE.
+
+The independent 7zz executable and corresponding source retain the upstream
+LGPL, BSD and unRAR terms. See ThirdParty/7zip/License.txt and ThirdParty/README.md.
+RAR creation is not provided.
+
+RAR test fixtures retain libarchive's license, reproduced in
+Tests/Fixtures/LICENSE-libarchive.txt.

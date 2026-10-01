@@ -1,0 +1,62 @@
+name: Release
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          test "$RELEASE_REF_TYPE" = tag
+          test "$RELEASE_TAG" = "v$(cat VERSION)"
+      - name: Run tests
+        run: ./scripts/test.sh
+      - name: Build universal installation package
+        run: |
+          ./scripts/package.sh
+          codesign --verify --deep --strict dist/MenuCraft.app
+          test "$(lipo -archs dist/MenuCraft.app/Contents/MacOS/MenuCraft | tr ' ' '\n' | sort | tr '\n' ' ')" = 'arm64 x86_64 '
+      - name: Prepare download assets
+        run: |
+          mkdir -p dist/release
+          version="$(cat VERSION)"
+          cp "dist/MenuCraft-$version-universal.dmg" dist/release/MenuCraft-universal.dmg
+          cp LICENSE NOTICE docs/INSTALL.txt dist/release/
+          (cd dist/release && shasum -a 256 MenuCraft-universal.dmg > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: dist/release/*
+          retention-days: 7
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" release-assets/* --verify-tag \
+            --title "MenuCraft $RELEASE_TAG" --notes-file docs/RELEASE_NOTES.md --latest
