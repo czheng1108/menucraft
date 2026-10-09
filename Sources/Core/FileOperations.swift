@@ -10,6 +10,7 @@ struct ItemResult: Codable, Equatable {
     var destination: String?
     var status: ItemStatus
     var message: String
+    var permission: PermissionKind? = nil
 }
 struct DissolveResult { var items: [ItemResult]; var sourceEmpty: Bool }
 struct RenameEntry: Codable, Equatable { var source: String; var destination: String; var fingerprint: String? = nil }
@@ -152,7 +153,7 @@ final class FileOperations {
                         }
                         do { try fm.removeItem(at: source) }
                         catch {
-                            results.append(.init(source: source.path, destination: target.path, status: .failed, message: "已复制但无法移除源：\(error.localizedDescription)")); continue
+                            results.append(.init(source: source.path, destination: target.path, status: .failed, message: "已复制但无法移除源：\(error.localizedDescription)", permission: PermissionKind.fileAccessError(error))); continue
                         }
                     }
                 }
@@ -160,7 +161,7 @@ final class FileOperations {
             } catch {
                 if let temporary = staging { try? fm.removeItem(at: temporary) }
                 let cancelled = (error as? CocoaError)?.code == .userCancelled
-                results.append(.init(source: source.path, status: cancelled ? .cancelled : .failed, message: error.localizedDescription))
+                results.append(.init(source: source.path, status: cancelled ? .cancelled : .failed, message: error.localizedDescription, permission: PermissionKind.fileAccessError(error)))
             }
         }
         progress?(sources.count, sources.count, "完成")

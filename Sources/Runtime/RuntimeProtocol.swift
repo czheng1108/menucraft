@@ -8,7 +8,6 @@ struct RuntimeState: Codable {
     var hiddenVisible: Bool
     var cutCount: Int
     var accessibilityEnabled: Bool
-    var inputMonitoringEnabled: Bool
     var scrollRunning: Bool
     var scrollPaused: Bool
     var scrollStatus: String

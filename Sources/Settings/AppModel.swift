@@ -10,7 +10,6 @@ final class AppModel: NSObject, ObservableObject {
     @Published var hiddenVisible = false
     @Published private var cutCount = 0
     @Published var accessibilityEnabled = false
-    @Published var inputMonitoringEnabled = false
     @Published var scrollRunning = false
     @Published var scrollPaused = false
     @Published var scrollStatus = "正在连接"
@@ -57,7 +56,6 @@ final class AppModel: NSObject, ObservableObject {
         if hiddenVisible != state.hiddenVisible { hiddenVisible = state.hiddenVisible }
         if cutCount != state.cutCount { cutCount = state.cutCount }
         if accessibilityEnabled != state.accessibilityEnabled { accessibilityEnabled = state.accessibilityEnabled }
-        if inputMonitoringEnabled != state.inputMonitoringEnabled { inputMonitoringEnabled = state.inputMonitoringEnabled }
         if scrollRunning != state.scrollRunning { scrollRunning = state.scrollRunning }
         if scrollPaused != state.scrollPaused { scrollPaused = state.scrollPaused }
         if scrollStatus != state.scrollStatus { scrollStatus = state.scrollStatus }
@@ -80,7 +78,7 @@ final class AppModel: NSObject, ObservableObject {
     func refreshSystemState() { send(.init(kind: "refresh")) }
     func enableExtension() { send(.init(kind: "extension")) }
     func requestAccessibility() { send(.init(kind: "accessibility")) }
-    func requestInputMonitoring() { send(.init(kind: "inputMonitoring")) }
+    func openPermissionSettings(_ kind: PermissionKind) { send(.init(kind: "openPermissionSettings", text: kind.rawValue)) }
     func setLogin(_ value: Bool) { send(.init(kind: "login", flag: value)) }
     func pauseScroll() { send(.init(kind: "pause")) }
     func cancelOperation() { send(.init(kind: "cancel")) }

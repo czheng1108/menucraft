@@ -24,6 +24,7 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
     private var window: NSWindow?
     private var renameWindow: NSWindow?
     private var archiveWindow: NSWindow?
+    private var permissionWindow: NSWindow?
     private var statusItem: NSStatusItem!
     private var receivedURL = false
 
@@ -39,13 +40,14 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
             switch request.kind {
             case "rename": self.openRename(request.files.map { URL(fileURLWithPath: $0) })
             case "archive": self.openArchive(request.files.map { URL(fileURLWithPath: $0) }, extracting: request.extracting, argument: request.argument)
+            case "permissions": self.openPermissions(PermissionKind(rawValue: request.argument ?? "") ?? .overview)
             default: self.showSettings()
             }
         }
         // A Dock launch has no window request queued in the resident core.
         model.onReady = { [weak self] in
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.window == nil, self.renameWindow == nil, self.archiveWindow == nil else { return }
+                guard let self, self.window == nil, self.renameWindow == nil, self.archiveWindow == nil, self.permissionWindow == nil else { return }
                 self.showSettings()
             }
         }
@@ -94,6 +96,18 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         window.contentMinSize = NSSize(width: 720, height: 580)
         window.contentView = NSHostingView(rootView: RenameEditor(model: model, files: files, close: { [weak self] in self?.renameWindow?.close() })); window.center(); renameWindow = window; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
+    func openPermissions(_ kind: PermissionKind) {
+        NSApp.setActivationPolicy(.regular)
+        let guide: NSWindow
+        if let permissionWindow { guide = permissionWindow }
+        else {
+            guide = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            guide.title = "MenuCraft · 权限指引"; guide.isReleasedWhenClosed = false; guide.delegate = self
+            guide.contentMinSize = NSSize(width: 540, height: 450); guide.center(); permissionWindow = guide
+        }
+        guide.contentView = NSHostingView(rootView: PermissionGuideView(model: model, kind: kind, close: { [weak self] in self?.permissionWindow?.close() }))
+        guide.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow else { return }
         DispatchQueue.main.async { [weak self] in
@@ -101,7 +115,8 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
             if self.window === closing { self.window = nil }
             if self.renameWindow === closing { self.renameWindow = nil }
             if self.archiveWindow === closing { self.archiveWindow = nil }
-            if self.window == nil && self.renameWindow == nil && self.archiveWindow == nil { NSApp.terminate(nil) }
+            if self.permissionWindow === closing { self.permissionWindow = nil }
+            if self.window == nil && self.renameWindow == nil && self.archiveWindow == nil && self.permissionWindow == nil { NSApp.terminate(nil) }
         }
     }
     func openArchive(_ files: [URL], extracting: Bool, argument: String?) {

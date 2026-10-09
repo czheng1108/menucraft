@@ -26,8 +26,15 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var receivedURL = false
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Capture the launch event before the delayed window request loses its context.
+        let launchEvent = NSAppleEventManager.shared().currentAppleEvent
+        let launchReason = launchEvent?.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue
+        let launchedInBackground = ProcessInfo.processInfo.arguments.contains("--background") ||
+            (launchEvent?.eventID == kAEOpenApplication &&
+             (launchReason == keyAELaunchedAsLogInItem || launchReason == keyAELaunchedAsServiceItem))
         model = AppModel()
         model.showWindow = { [weak self] in self?.show(.init(kind: "settings")) }
+        model.showPermissions = { [weak self] permission in self?.show(.init(kind: "permissions", argument: permission.rawValue)) }
         model.showRename = { [weak self] files in self?.show(.init(kind: "rename", files: files.map(\.path))) }
         model.showArchive = { [weak self] files, extracting, argument in self?.show(.init(kind: "archive", files: files.map(\.path), extracting: extracting, argument: argument)) }
         server = LocalServer(path: RuntimeAddress.socket)
@@ -51,7 +58,9 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate {
         }
         statusItem.menu = menu; model.broadcastSnapshot(force: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            if self?.receivedURL == false && !ProcessInfo.processInfo.arguments.contains("--background") { self?.showSettings() }
+            guard let self else { return }
+            let missingPermissions = self.model.checkPermissions()
+            if !missingPermissions && !self.receivedURL && !launchedInBackground { self.showSettings() }
         }
     }
     private func connect(_ peer: LocalChannel) {
@@ -79,7 +88,7 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate {
             if value != model.configuration { model.configuration = value }
             publish(to: id)
         case "accessibility": model.requestAccessibility()
-        case "inputMonitoring": model.requestInputMonitoring()
+        case "openPermissionSettings": if let text = message.text, let permission = PermissionKind(rawValue: text) { model.openPermissionSettings(permission) }
         case "extension": model.enableExtension()
         case "login": if let flag = message.flag { model.setLogin(flag) }
         case "pause": model.pauseScroll()

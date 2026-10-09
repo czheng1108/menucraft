@@ -13,7 +13,6 @@ final class AppModel: NSObject, ObservableObject {
     @Published var extensionConnected = false
     @Published var hiddenVisible = false
     @Published var accessibilityEnabled = false
-    @Published var inputMonitoringEnabled = false
     @Published var scrollRunning = false
     @Published var scrollPaused = false
     @Published var scrollStatus = "未启用"
@@ -29,6 +28,7 @@ final class AppModel: NSObject, ObservableObject {
     @Published var presentsResults = false
     @Published var lastRename: RenameJournal?
     var showWindow: (() -> Void)?
+    var showPermissions: ((PermissionKind) -> Void)?
     var showRename: (([URL]) -> Void)?
     var showArchive: (([URL], Bool, String?) -> Void)?
     private let scrollEngine = MCScrollEngine()
@@ -46,6 +46,7 @@ final class AppModel: NSObject, ObservableObject {
     var uiConnected = false
     private var lastDiagnosticsKey = ""
     private var lastSnapshot: Data?
+    private var permissionPrompts = PermissionPromptState()
     private var renameRecordPersisted = true
     private var operationRecordPersisted = true
     private let logger = Logger(subsystem: "local.menucraft.app", category: "runtime")
@@ -85,7 +86,7 @@ final class AppModel: NSObject, ObservableObject {
     var snapshot: MenuSnapshot { .init(configuration: configuration, volumes: volumes, hiddenVisible: hiddenVisible, cutCount: cutFiles.count) }
     var loginEnabled: Bool { SMAppService.mainApp.status == .enabled }
     func persist() {
-        do { try store.save(configuration); notice = "设置已保存"; applyAppearance(); reconcileScroll(); broadcastSnapshot() }
+        do { try store.save(configuration); notice = "设置已保存"; applyAppearance(); reconcileScroll(); broadcastSnapshot(); checkPermissions() }
         catch { notice = "保存失败：\(error.localizedDescription)" }
     }
     func applyAppearance() {
@@ -115,14 +116,11 @@ final class AppModel: NSObject, ObservableObject {
         if extensionEnabled != enabled { extensionEnabled = enabled }
         let accessibility = AXIsProcessTrusted()
         if accessibilityEnabled != accessibility { accessibilityEnabled = accessibility }
-        if uiConnected || lastDiagnosticsKey.isEmpty {
-            let input = CGPreflightListenEventAccess()
-            if inputMonitoringEnabled != input { inputMonitoringEnabled = input }
-        }
         reconcileScroll()
         let connected = extensionEnabled && heartbeat != nil
         if extensionConnected != connected { extensionConnected = connected }
         refreshHiddenFileState()
+        checkPermissions()
     }
     func refreshSystemState(includeVolumes: Bool = false) {
         refreshHealthState()
@@ -141,17 +139,28 @@ final class AppModel: NSObject, ObservableObject {
         let visible = (value as? NSNumber)?.boolValue ?? (value as? String).map { ["true", "yes", "1"].contains($0.lowercased()) } ?? false
         if visible != hiddenVisible { hiddenVisible = visible; broadcastSnapshot() }
     }
-    func enableExtension() { FIFinderSyncController.showExtensionManagementInterface() }
-    func requestAccessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-        notice = "请在系统设置中为 MenuCraft 开启辅助功能；滚动控制和隐藏文件切换需要此权限。"
+    @discardableResult func checkPermissions() -> Bool {
+        let missing = PermissionRequirements.missing(extensionEnabled: extensionEnabled, accessibilityEnabled: accessibilityEnabled, scroll: configuration.scroll, paused: scrollPaused)
+        if let showPermissions, permissionPrompts.shouldPresent(missing) { showPermissions(.overview) }
+        return !missing.isEmpty
     }
-    func requestInputMonitoring() {
-        _ = CGRequestListenEventAccess()
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
-        notice = "请为 MenuCraft 开启输入监控，然后退出并重新打开 MenuCraft。"
+    func enableExtension() {
+        if extensionEnabled { openPermissionSettings(.finder) }
+        else { showPermissions?(.finder) }
+    }
+    func requestAccessibility() {
+        showPermissions?(.accessibility)
+    }
+    func openPermissionSettings(_ kind: PermissionKind) {
+        if kind == .finder { FIFinderSyncController.showExtensionManagementInterface(); return }
+        let pane: String
+        switch kind {
+        case .accessibility: pane = "Privacy_Accessibility"
+        case .files: pane = "Privacy_FilesAndFolders"
+        case .automation: pane = "Privacy_Automation"
+        default: return
+        }
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") { NSWorkspace.shared.open(url) }
     }
     func reconcileScroll() {
         let s = configuration.scroll
@@ -175,10 +184,10 @@ final class AppModel: NSObject, ObservableObject {
         exportScrollDiagnostics()
     }
     func exportScrollDiagnostics(force: Bool = false) {
-        let key = "\(scrollRunning):\(accessibilityEnabled):\(inputMonitoringEnabled):\(scrollStatus)"
+        let key = "\(scrollRunning):\(accessibilityEnabled):\(scrollStatus)"
         guard force || key != lastDiagnosticsKey else { return }
         lastDiagnosticsKey = key
-        let status: [String: Any] = ["running": scrollEngine.running, "accessibility": accessibilityEnabled, "inputMonitoring": inputMonitoringEnabled, "events": scrollEngine.eventCount, "modified": scrollEngine.modifiedCount, "device": scrollEngine.eventCount == 0 ? "等待滚动" : scrollEngine.lastDevice == 1 ? "触控板" : "鼠标 / 滚轮", "status": scrollStatus]
+        let status: [String: Any] = ["running": scrollEngine.running, "accessibility": accessibilityEnabled, "events": scrollEngine.eventCount, "modified": scrollEngine.modifiedCount, "device": scrollEngine.eventCount == 0 ? "等待滚动" : scrollEngine.lastDevice == 1 ? "触控板" : "鼠标 / 滚轮", "status": scrollStatus]
         if let data = try? JSONSerialization.data(withJSONObject: status, options: [.sortedKeys]) { try? data.write(to: supportDirectory.appendingPathComponent("scroll-status.json"), options: .atomic) }
     }
     func loadPresentationRecords() {
@@ -187,9 +196,9 @@ final class AppModel: NSObject, ObservableObject {
     }
     func releasePresentationRecords() { if operationRecordPersisted { results = [] }; if renameRecordPersisted { lastRename = nil } }
     var runtimeState: RuntimeState {
-        .init(configuration: configuration, notice: notice, extensionEnabled: extensionEnabled, extensionConnected: extensionConnected, hiddenVisible: hiddenVisible, cutCount: cutFiles.count, accessibilityEnabled: accessibilityEnabled, inputMonitoringEnabled: inputMonitoringEnabled, scrollRunning: scrollRunning, scrollPaused: scrollPaused, scrollStatus: scrollStatus, volumes: volumes, isWorking: isWorking, progress: progress, progressLabel: progressLabel, resultTitle: resultTitle, results: results, presentsResults: presentsResults, lastRename: lastRename, loginEnabled: loginEnabled, archiveAvailable: archiveEngine.available)
+        .init(configuration: configuration, notice: notice, extensionEnabled: extensionEnabled, extensionConnected: extensionConnected, hiddenVisible: hiddenVisible, cutCount: cutFiles.count, accessibilityEnabled: accessibilityEnabled, scrollRunning: scrollRunning, scrollPaused: scrollPaused, scrollStatus: scrollStatus, volumes: volumes, isWorking: isWorking, progress: progress, progressLabel: progressLabel, resultTitle: resultTitle, results: results, presentsResults: presentsResults, lastRename: lastRename, loginEnabled: loginEnabled, archiveAvailable: archiveEngine.available)
     }
-    func pauseScroll() { scrollPaused.toggle(); reconcileScroll() }
+    func pauseScroll() { scrollPaused.toggle(); reconcileScroll(); checkPermissions() }
     func stopScroll() { scrollEngine.stop() }
     func chooseArchiveFiles(extract: Bool) {
         let panel = NSOpenPanel(); panel.title = extract ? "选择压缩包" : "选择要压缩的项目"; panel.canChooseDirectories = !extract; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
@@ -243,7 +252,11 @@ final class AppModel: NSObject, ObservableObject {
             } catch { showError(error) }
         }
     }
-    func showError(_ error: Error) { notice = error.localizedDescription; let alert = NSAlert(error: error); NSApp.activate(ignoringOtherApps: true); alert.runModal() }
+    func showError(_ error: Error) {
+        notice = error.localizedDescription
+        if let permission = PermissionKind.fileAccessError(error), let showPermissions { showPermissions(permission); return }
+        let alert = NSAlert(error: error); NSApp.activate(ignoringOtherApps: true); alert.runModal()
+    }
 
     func handle(_ request: ActionRequest) {
         logger.info("Handling action \(request.action.rawValue, privacy: .public)")
@@ -301,7 +314,12 @@ final class AppModel: NSObject, ObservableObject {
             var error: NSDictionary?
             NSAppleScript(source: script)?.executeAndReturnError(&error)
             let message = error.map { "终端未能进入目录：\($0[NSAppleScript.errorMessage] ?? $0)" }
-            DispatchQueue.main.async { self.notice = message ?? "已请求终端进入 \(directory.path)"; if let message { self.showError(CraftError.invalidRename(message)) } }
+            let permission = PermissionKind.automationError((error?[NSAppleScript.errorNumber] as? NSNumber)?.intValue)
+            DispatchQueue.main.async {
+                self.notice = message ?? "已请求终端进入 \(directory.path)"
+                if let permission { self.showPermissions?(permission) }
+                else if let message { self.showError(CraftError.invalidRename(message)) }
+            }
         }
     }
     private func openFiles(_ files: [URL], shortcutID: String?) {
@@ -359,10 +377,10 @@ final class AppModel: NSObject, ObservableObject {
                         // Recheck immediately before trashing, including hidden entries.
                         guard try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).isEmpty else { throw CraftError.sourceChanged }
                         do { try FileManager.default.trashItem(at: folder, resultingItemURL: nil); items.append(.init(source: folder.path, status: .completed, message: "空目录已移入废纸篓")) }
-                        catch { items.append(.init(source: folder.path, status: .failed, message: "内容已移动，空目录未能移入废纸篓：\(error.localizedDescription)")) }
+                        catch { items.append(.init(source: folder.path, status: .failed, message: "内容已移动，空目录未能移入废纸篓：\(error.localizedDescription)", permission: PermissionKind.fileAccessError(error))) }
                     } else { items.append(.init(source: folder.path, status: .skipped, message: "原目录保留，含未完成项目或操作已取消")) }
                     DispatchQueue.main.async { self.finishOperation(items) }
-                } catch { DispatchQueue.main.async { self.finishOperation([.init(source: folder.path, status: .failed, message: error.localizedDescription)]) } }
+                } catch { DispatchQueue.main.async { self.finishOperation([.init(source: folder.path, status: .failed, message: error.localizedDescription, permission: PermissionKind.fileAccessError(error))]) } }
             }
         } catch { showError(error) }
     }
@@ -375,7 +393,7 @@ final class AppModel: NSObject, ObservableObject {
             let result = files.map { file -> ItemResult in
                 if token.cancelled { return .init(source: file.path, status: .cancelled, message: "已取消") }
                 do { let target = try self.operations.createAlias(source: file, directory: desktop); return .init(source: file.path, destination: target.path, status: .completed, message: "替身已创建") }
-                catch { return .init(source: file.path, status: .failed, message: error.localizedDescription) }
+                catch { return .init(source: file.path, status: .failed, message: error.localizedDescription, permission: PermissionKind.fileAccessError(error)) }
             }
             DispatchQueue.main.async { self.finishOperation(result) }
         }
@@ -407,7 +425,8 @@ final class AppModel: NSObject, ObservableObject {
         notice = "\(resultTitle)：\(successful) 项完成，\(items.count - successful) 项需查看"; broadcastSnapshot(); presentsResults = presentResults
         do { try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true); try JSONEncoder().encode(items).write(to: supportDirectory.appendingPathComponent("last-operation.json"), options: .atomic); operationRecordPersisted = true } catch { operationRecordPersisted = false; notice += "；结果记录未能保存" }
         if !uiConnected { releasePresentationRecords() }
-        if !presentResults, let failure = items.first(where: { $0.status == .failed }) { showError(ArchiveError.failed(failure.message)) }
+        if let permission = items.first(where: { $0.status == .failed && $0.permission != nil })?.permission { showPermissions?(permission) }
+        else if !presentResults, let failure = items.first(where: { $0.status == .failed }) { showError(ArchiveError.failed(failure.message)) }
     }
     func cancelOperation() { cancellation.cancel(); notice = "正在取消，已完成项目保留，未处理项目保留源文件。" }
     private func archivePassword(extracting: Bool) -> String? {
@@ -462,13 +481,13 @@ final class AppModel: NSObject, ObservableObject {
                                 output = try self.archiveEngine.extract(file, to: target, sameNameFolder: sameNameFolder, password: archivePassword, cancellation: token, progress: progress)
                             }
                             items.append(.init(source: file.path, destination: output.first?.path, status: .completed, message: "解压完成，同名项目添加序号"))
-                        } catch { items.append(.init(source: file.path, status: token.cancelled ? .cancelled : .failed, message: error.localizedDescription)) }
+                        } catch { items.append(.init(source: file.path, status: token.cancelled ? .cancelled : .failed, message: error.localizedDescription, permission: PermissionKind.fileAccessError(error))) }
                     }
                 } else {
                     let output = try self.archiveEngine.compress(files, to: directory, name: name, options: options, password: password, cancellation: token) { value, label in DispatchQueue.main.async { self.progress = value; self.progressLabel = label } }
                     items = output.map { .init(source: $0.path, destination: $0.path, status: .completed, message: "压缩完成，原文件保留") }
                 }
-            } catch { items = [.init(source: files.first?.path ?? directory.path, status: token.cancelled ? .cancelled : .failed, message: error.localizedDescription)] }
+            } catch { items = [.init(source: files.first?.path ?? directory.path, status: token.cancelled ? .cancelled : .failed, message: error.localizedDescription, permission: PermissionKind.fileAccessError(error))] }
             archivePassword = ""
             DispatchQueue.main.async { self.finishOperation(items, presentResults: !quick) }
         }
