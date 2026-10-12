@@ -85,7 +85,7 @@ struct ArchiveTests {
         try test("v1 settings migration retains templates, IDs and disabled actions") { _ in
             let old = Data(#"{"version":1,"order":["copyPath","newFile","hidden"],"enabled":["copyPath"],"templates":[{"id":"mine","title":"Mine","filename":"a.txt","content":"private"}],"favorites":[{"id":"keep","name":"Custom","path":"/tmp"}],"grouped":false}"#.utf8)
             let config = try JSONDecoder().decode(AppConfiguration.self, from: old)
-            try check(config.enabled == [.copyPath,.compress,.extract] && config.templates[0].id == "mine" && config.favorites[0].id == "keep" && !config.grouped, "Migration discarded config")
+            try check(config.enabled == [.copyPath,.newFolder,.compress,.extract] && config.templates[0].id == "mine" && config.favorites[0].id == "keep" && !config.grouped, "Migration discarded config")
             let scroll = ScrollConfiguration.migrated(["InvertScrollingOn":true,"ReverseTrackpad":false])
             try check(scroll.enabled && scroll.mouse && !scroll.trackpad && scroll.vertical && !scroll.horizontal && scroll.step == 3, "Scroll migration changed preferences")
         }

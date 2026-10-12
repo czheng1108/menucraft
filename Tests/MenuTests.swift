@@ -16,7 +16,13 @@ struct MenuTests {
         let menu = NativeMenuBuilder.build(snapshot: snapshot, context: folder, target: target, selector: #selector(TestMenuTarget.execute(_:)))
         func ensure(_ condition: Bool, _ message: String) throws { if !condition { throw NSError(domain: "MenuTests", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }; print("PASS \(message)") }
         let actions = menu.items.filter { !$0.isSeparatorItem && $0.title != "MenuCraft 设置…" }
-        try ensure(actions.count == 12, "Folder menu contains compression alongside the applicable core actions")
+        try ensure(actions.count == 13, "Folder menu contains folder creation alongside the applicable core actions")
+        let newFolder = menu.items.first { $0.title == "新建文件夹" }
+        let folderRequest = (newFolder?.representedObject as? String).flatMap(URL.init(string:)).flatMap { try? ActionRequest.decode($0) }
+        try ensure(folderRequest?.action == .newFolder && folderRequest?.context.destination.path == "/tmp/项目文件", "Folder creation targets the selected folder")
+        let background = MenuContext(directory: "/tmp", selection: [], singleDirectory: false, isBackground: true)
+        let backgroundMenu = NativeMenuBuilder.build(snapshot: snapshot, context: background, target: target, selector: #selector(TestMenuTarget.execute(_:)))
+        try ensure(backgroundMenu.items.contains { $0.title == "新建文件夹" }, "Background menu creates folders in the current directory")
         try ensure(actions.allSatisfy { $0.image != nil }, "Every right-click action has a native icon")
         try ensure(actions.allSatisfy { $0.image?.isTemplate == false }, "Colored menu images preserve their palette")
         try ensure(menu.items.contains { $0.title == "取消显示隐藏文件" }, "Visibility label reflects real state snapshot")
@@ -31,6 +37,10 @@ struct MenuTests {
         try ensure(mono.items.filter { !$0.isSeparatorItem && $0.title != "MenuCraft 设置…" }.allSatisfy { $0.image?.isTemplate == true }, "Monochrome icons use native template rendering")
         let file = MenuContext(directory: "/tmp", selection: ["/tmp/file.txt"], singleDirectory: false, isBackground: false)
         let fileMenu = NativeMenuBuilder.build(snapshot: .init(configuration: config), context: file, target: target, selector: #selector(TestMenuTarget.execute(_:)))
+        try ensure(!fileMenu.items.contains { $0.title == "新建文件夹" }, "File selection omits the folder creation action")
+        let transferChoices = fileMenu.items.first { $0.title == "移动 / 复制到" }?.submenu?.items ?? []
+        let choices = transferChoices.compactMap { ($0.representedObject as? String).flatMap(URL.init(string:)).flatMap { try? ActionRequest.decode($0) }?.argument }
+        try ensure(choices.contains("chooseMove") && choices.contains("chooseCopy") && !choices.contains("choose"), "Directory chooser actions carry the selected operation without a second prompt")
         try ensure(!fileMenu.items.contains { $0.title == "解除文件夹" || $0.title == "加入常用目录" || $0.title == "粘贴到这里" }, "File menu omits folder-only and empty-paste actions")
         let archive = MenuContext(directory: "/tmp", selection: ["/tmp/资料.zip"], singleDirectory: false, isBackground: false)
         let archiveMenu = NativeMenuBuilder.build(snapshot: .init(configuration: config), context: archive, target: target, selector: #selector(TestMenuTarget.execute(_:)))

@@ -74,7 +74,7 @@ final class MenuCraftFinderSync: FIFinderSync {
         else { url = URL(string: "menucraft://settings") }
         if let url {
             let configuration = NSWorkspace.OpenConfiguration()
-            if let request = try? ActionRequest.decode(url), request.action == .compress || request.action == .extract { configuration.activates = false }
+            if let request = try? ActionRequest.decode(url), [.cut, .paste, .transfer, .compress, .extract].contains(request.action) { configuration.activates = false }
             NSWorkspace.shared.open(url, configuration: configuration)
         }
     }

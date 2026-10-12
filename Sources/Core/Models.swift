@@ -1,10 +1,11 @@
 import Foundation
 
 enum ActionID: String, Codable, CaseIterable {
-    case newFile, copyPath, copyName, terminal, openApp, favorite, cut, paste, transfer, dissolve, compress, extract, hidden, rename, alias
+    case newFolder, newFile, copyPath, copyName, terminal, openApp, favorite, cut, paste, transfer, dissolve, compress, extract, hidden, rename, alias
 
     var title: String {
         switch self {
+        case .newFolder: return "新建文件夹"
         case .newFile: return "新建文件"
         case .copyPath: return "复制路径"
         case .copyName: return "复制文件名"
@@ -24,6 +25,7 @@ enum ActionID: String, Codable, CaseIterable {
     }
     var symbol: String {
         switch self {
+        case .newFolder: return "folder.badge.plus"
         case .newFile: return "doc.badge.plus"
         case .copyPath: return "point.topleft.down.curvedto.point.bottomright.up"
         case .copyName: return "doc.on.doc"
@@ -43,7 +45,7 @@ enum ActionID: String, Codable, CaseIterable {
     }
     var group: Int {
         switch self {
-        case .newFile, .copyPath, .copyName: return 0
+        case .newFolder, .newFile, .copyPath, .copyName: return 0
         case .terminal, .openApp, .favorite: return 1
         case .cut, .paste, .transfer, .dissolve, .compress, .extract: return 2
         case .hidden: return 3
@@ -99,7 +101,7 @@ enum PathStyle: String, Codable, CaseIterable {
     }
 }
 struct AppConfiguration: Codable, Equatable {
-    var version = 3
+    var version = 4
     var order: [ActionID] = ActionID.allCases
     var enabled: [ActionID] = ActionID.allCases.filter { !$0.optional }
     var grouped = true
@@ -119,10 +121,11 @@ struct AppConfiguration: Codable, Equatable {
     var sidebarCollapsed = false
     var scroll = ScrollConfiguration()
     var archive = ArchiveConfiguration()
+    var transferConflictPolicy: ConflictPolicy = .keepBoth
     var scrollMigrated = false
     init() {}
     enum CodingKeys: String, CodingKey {
-        case version, order, enabled, grouped, coloredIcons, terminal, pathStyle, nameWithoutExtension, appearance, templates, favorites, recent, apps, monitored, sidebarCollapsed, scroll, archive, scrollMigrated
+        case version, order, enabled, grouped, coloredIcons, terminal, pathStyle, nameWithoutExtension, appearance, templates, favorites, recent, apps, monitored, sidebarCollapsed, scroll, archive, transferConflictPolicy, scrollMigrated
     }
     init(from decoder: Decoder) throws {
         self.init()
@@ -144,6 +147,7 @@ struct AppConfiguration: Codable, Equatable {
         sidebarCollapsed = try c.decodeIfPresent(Bool.self, forKey: .sidebarCollapsed) ?? false
         scroll = try c.decodeIfPresent(ScrollConfiguration.self, forKey: .scroll) ?? .init()
         archive = try c.decodeIfPresent(ArchiveConfiguration.self, forKey: .archive) ?? .init()
+        transferConflictPolicy = ConflictPolicy(rawValue: try c.decodeIfPresent(String.self, forKey: .transferConflictPolicy) ?? "") ?? .keepBoth
         scrollMigrated = try c.decodeIfPresent(Bool.self, forKey: .scrollMigrated) ?? false
         normalize()
     }
@@ -160,7 +164,11 @@ struct AppConfiguration: Codable, Equatable {
                 if !order.contains(action) { order.insert(action, at: order.firstIndex(of: .hidden) ?? order.count) }
             }
         }
-        version = 3
+        if version < 4 {
+            if !enabled.contains(.newFolder) { enabled.append(.newFolder) }
+            if !order.contains(.newFolder) { order.insert(.newFolder, at: order.firstIndex(of: .newFile) ?? 0) }
+        }
+        version = 4
         order = order.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
         order += ActionID.allCases.filter { !order.contains($0) }
         enabled = Array(Set(enabled)).sorted { order.firstIndex(of: $0)! < order.firstIndex(of: $1)! }
@@ -186,6 +194,7 @@ struct MenuContext: Codable, Equatable {
     }
     func applies(_ action: ActionID, cutCount: Int) -> Bool {
         switch action {
+        case .newFolder: return isBackground || (singleDirectory && selection.count == 1)
         case .favorite, .dissolve: return singleDirectory && selection.count == 1 && !isBackground
         case .copyName, .cut, .transfer, .alias, .compress: return !selection.isEmpty && !isBackground
         case .extract: return !isBackground && !selection.isEmpty && !singleDirectory && selection.allSatisfy { ArchiveFormat.isArchive($0) }

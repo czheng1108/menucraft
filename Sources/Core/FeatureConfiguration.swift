@@ -1,5 +1,10 @@
 import Foundation
 
+enum ConflictPolicy: String, Codable, CaseIterable {
+    case keepBoth, skip
+    var title: String { self == .keepBoth ? "保留两者（自动添加序号）" : "跳过同名项目" }
+}
+
 struct ScrollConfiguration: Codable, Equatable {
     var enabled = false
     var mouse = true

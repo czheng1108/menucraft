@@ -16,7 +16,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .archives: keywords = "密码 加密 格式 分卷 解压 压缩"
         case .settings: keywords = "外观 深色 浅色 登录 启动 权限 扩展名 路径格式"
-        case .destinations: keywords = "终端 收藏 常用目录 应用"
+        case .destinations: keywords = "终端 收藏 常用目录 应用 移动 复制 同名 冲突 规则 跳过"
         case .templates: keywords = "新建文件 Markdown 模板"
         case .scroll: keywords = "鼠标 触控板 纵向 横向 反向 方向"
         default: keywords = title
@@ -208,6 +208,14 @@ struct TemplateSettingsView: View {
 struct DestinationSettingsView: View {
     @ObservedObject var model: AppModel
     var body: some View {
+        SettingsSection(title: "移动与复制") {
+            SettingsRow(title: "存在同名项目时", subtitle: "应用于移动、复制、剪切粘贴及解除文件夹。") {
+                Picker("存在同名项目时", selection: $model.configuration.transferConflictPolicy) {
+                    ForEach(ConflictPolicy.allCases, id: \.self) { Text($0.title).tag($0) }
+                }.craftPicker()
+            }
+            Text("按已保存的规则直接执行，不再逐次确认。可在设置窗口查看进度或取消；跳过的源项目保留。").font(.caption).foregroundStyle(.secondary).padding(14)
+        }
         SettingsSection(title: "终端") {
             SettingsRow(title: "默认终端", subtitle: "文件进入父目录，文件夹进入自身。") {
                 Picker("默认终端", selection: $model.configuration.terminal) { Text("Terminal").tag("Terminal"); Text("iTerm2").tag("iTerm2") }.craftPicker()

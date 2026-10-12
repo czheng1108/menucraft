@@ -1,9 +1,7 @@
 import Foundation
 import CryptoKit
+import Darwin
 
-enum ConflictPolicy: String, CaseIterable { case keepBoth, skip
-    var title: String { self == .keepBoth ? "保留两者（自动添加序号）" : "跳过同名项目" }
-}
 enum ItemStatus: String, Codable { case completed, skipped, failed, cancelled }
 struct ItemResult: Codable, Equatable {
     var source: String
@@ -41,12 +39,12 @@ final class FileOperations {
     }
     func isDirectory(_ url: URL) -> Bool { (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
     private func exists(_ url: URL) -> Bool { (try? url.resourceValues(forKeys: [.isSymbolicLinkKey])) != nil }
-    func uniqueURL(_ desired: URL) -> URL {
+    func uniqueURL(_ desired: URL, treatAsDirectory: Bool = false) -> URL {
         if !exists(desired) { return desired }
         let directory = desired.deletingLastPathComponent()
         let isFolder = isDirectory(desired)
         let package = (try? desired.resourceValues(forKeys: [.isPackageKey]).isPackage) == true
-        let ext = (isFolder && !package) || desired.lastPathComponent.hasPrefix(".") ? "" : desired.pathExtension
+        let ext = treatAsDirectory || (isFolder && !package) || desired.lastPathComponent.hasPrefix(".") ? "" : desired.pathExtension
         let stem = ext.isEmpty ? desired.lastPathComponent : desired.deletingPathExtension().lastPathComponent
         var counter = 2
         while true {
@@ -69,6 +67,20 @@ final class FileOperations {
             } catch let error as CocoaError where error.code == .fileWriteFileExists { continue }
         }
         throw CraftError.collision(filename)
+    }
+    func createFolder(name: String, directory: URL) throws -> URL {
+        try Self.validateName(name)
+        guard isDirectory(directory) else { throw CraftError.notDirectory }
+        let desired = directory.appendingPathComponent(name, isDirectory: true)
+        for _ in 0..<100 {
+            let target = uniqueURL(desired, treatAsDirectory: true)
+            // mkdir atomically claims a name without accepting an existing directory.
+            if mkdir(target.path, 0o777) == 0 { return target }
+            let code = errno
+            if code == EEXIST { continue }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [NSFilePathErrorKey: target.path])
+        }
+        throw CraftError.collision(name)
     }
     private func ensureSafe(source: URL, directory: URL) throws {
         guard exists(source) else { throw CraftError.missingFile(source.path) }

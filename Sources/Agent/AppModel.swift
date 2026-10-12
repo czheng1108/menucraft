@@ -263,10 +263,11 @@ final class AppModel: NSObject, ObservableObject {
         guard !handledRequests.contains(request.id) else { return }
         handledRequests.insert(request.id)
         if handledRequests.count > 200 { handledRequests = [request.id] }
-        if isWorking { notice = "正在处理文件，请完成或取消当前操作后再试。"; if request.action != .compress && request.action != .extract { showWindow?() }; return }
+        if isWorking { notice = "正在处理文件，请完成或取消当前操作后再试。"; if ![.cut, .paste, .transfer, .compress, .extract].contains(request.action) { showWindow?() }; return }
         let files = request.context.selection.map { URL(fileURLWithPath: $0) }
         let destination = actualDestination(request.context)
         switch request.action {
+        case .newFolder: createFolder(at: destination)
         case .newFile: createFile(templateID: request.argument, at: destination)
         case .copyPath:
             let urls = files.isEmpty ? [destination] : files
@@ -281,7 +282,7 @@ final class AppModel: NSObject, ObservableObject {
             else { configuration.favorites.append(.init(name: files[0].lastPathComponent, path: files[0].path)); notice = "已加入常用目录" }
         case .cut:
             cutFiles = files.filter { FileManager.default.fileExists(atPath: $0.path) }; broadcastSnapshot(); notice = "已剪切 \(cutFiles.count) 项，请在目标文件夹右键选择“粘贴到这里”。"
-        case .paste: confirmTransfer(cutFiles, directory: destination, moving: true, fromCut: true)
+        case .paste: transfer(cutFiles, directory: destination, moving: true, fromCut: true)
         case .transfer: chooseTransfer(files, argument: request.argument)
         case .dissolve: if files.count == 1 { confirmDissolve(files[0]) }
         case .compress: quickArchive(files, extracting: false, argument: request.argument)
@@ -300,6 +301,12 @@ final class AppModel: NSObject, ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         if let filename = FileNamePanel(template: template, directory: directory).run() {
             do { let url = try operations.create(template: template, filename: filename, directory: directory); notice = "已创建 \(url.lastPathComponent)"; NSWorkspace.shared.activateFileViewerSelecting([url]) } catch { showError(error) }
+        }
+    }
+    private func createFolder(at directory: URL) {
+        if let name = FileNamePanel(directory: directory).run() {
+            do { let url = try operations.createFolder(name: name, directory: directory); notice = "已创建 \(url.lastPathComponent)"; NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            catch { showError(error) }
         }
     }
     private func openTerminal(at directory: URL) {
@@ -328,46 +335,38 @@ final class AppModel: NSObject, ObservableObject {
             DispatchQueue.main.async { if let error { self.showError(error) } else { self.notice = "已用 \(shortcut.name) 打开" } }
         }
     }
-    private func conflictPopup() -> NSPopUpButton {
-        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 180, height: 26), pullsDown: false)
-        popup.addItems(withTitles: ConflictPolicy.allCases.map(\.title)); return popup
-    }
     private func chooseTransfer(_ files: [URL], argument: String?) {
         guard !files.isEmpty else { return }
         if let argument, argument.hasPrefix("copy:") || argument.hasPrefix("move:") {
-            confirmTransfer(files, directory: URL(fileURLWithPath: String(argument.dropFirst(5)), isDirectory: true), moving: argument.hasPrefix("move:"), fromCut: false)
-        } else if let directory = chooseDirectory(title: "选择目标文件夹") {
-            let alert = NSAlert(); alert.messageText = "如何放到目标目录？"; alert.informativeText = directory.path; alert.addButton(withTitle: "复制"); alert.addButton(withTitle: "移动"); alert.addButton(withTitle: "取消")
-            let response = alert.runModal(); if response != .alertThirdButtonReturn { confirmTransfer(files, directory: directory, moving: response == .alertSecondButtonReturn, fromCut: false) }
+            transfer(files, directory: URL(fileURLWithPath: String(argument.dropFirst(5)), isDirectory: true), moving: argument.hasPrefix("move:"), fromCut: false)
+        } else {
+            let moving = argument == "chooseMove"
+            if let directory = chooseDirectory(title: moving ? "选择移动目标文件夹" : "选择复制目标文件夹", showSettings: false) {
+                transfer(files, directory: directory, moving: moving, fromCut: false)
+            }
         }
     }
-    private func confirmTransfer(_ files: [URL], directory: URL, moving: Bool, fromCut: Bool) {
+    private func transfer(_ files: [URL], directory: URL, moving: Bool, fromCut: Bool) {
         guard !files.isEmpty else { notice = "没有待粘贴的项目"; return }
-        let popup = conflictPopup()
-        let alert = NSAlert(); alert.messageText = "\(moving ? "移动" : "复制") \(files.count) 个项目？"
-        alert.informativeText = "目标：\(directory.path)\n\n" + files.prefix(5).map(\.lastPathComponent).joined(separator: "\n") + (files.count > 5 ? "\n…" : "") + "\n\n同名处理："
-        alert.accessoryView = popup; alert.addButton(withTitle: moving ? "移动" : "复制"); alert.addButton(withTitle: "取消"); NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let policy = ConflictPolicy.allCases[popup.indexOfSelectedItem]
-        let token = prepareOperation(moving ? "移动文件" : "复制文件")
+        let policy = configuration.transferConflictPolicy
+        let token = prepareOperation(moving ? "移动文件" : "复制文件", showSettings: false)
         worker.async {
             let result = self.operations.transfer(files, to: directory, moving: moving, policy: policy, cancellation: token, progress: self.progressCallback)
             DispatchQueue.main.async {
                 if fromCut { let done = Set(result.filter { $0.status == .completed }.map(\.source)); self.cutFiles.removeAll { done.contains($0.path) } }
                 if result.contains(where: { $0.status == .completed }) { self.recordRecent(directory) }
-                self.finishOperation(result)
+                self.finishOperation(result, presentResults: false)
             }
         }
     }
     private func confirmDissolve(_ folder: URL) {
         do {
             let plan = try operations.dissolvePlan(folder)
-            let popup = conflictPopup()
+            let policy = configuration.transferConflictPolicy
             let alert = NSAlert(); alert.messageText = "解除“\(folder.lastPathComponent)”？"
-            alert.informativeText = "将 \(plan.count) 个直接子项移到：\n\(folder.deletingLastPathComponent().path)\n\n" + plan.prefix(8).map(\.lastPathComponent).joined(separator: "\n") + (plan.count > 8 ? "\n…" : "") + "\n\n内部子文件夹整体保留。全部移动成功且原目录为空后，原目录才移入废纸篓。\n同名处理："
-            alert.accessoryView = popup; alert.addButton(withTitle: "解除文件夹"); alert.addButton(withTitle: "取消"); NSApp.activate(ignoringOtherApps: true)
+            alert.informativeText = "将 \(plan.count) 个直接子项移到：\n\(folder.deletingLastPathComponent().path)\n\n" + plan.prefix(8).map(\.lastPathComponent).joined(separator: "\n") + (plan.count > 8 ? "\n…" : "") + "\n\n内部子文件夹整体保留。全部移动成功且原目录为空后，原目录才移入废纸篓。\n同名处理：\(policy.title)（可在设置中修改）"
+            alert.addButton(withTitle: "解除文件夹"); alert.addButton(withTitle: "取消"); NSApp.activate(ignoringOtherApps: true)
             guard alert.runModal() == .alertFirstButtonReturn else { return }
-            let policy = ConflictPolicy.allCases[popup.indexOfSelectedItem]
             let token = prepareOperation("解除文件夹")
             worker.async {
                 do {
@@ -414,7 +413,7 @@ final class AppModel: NSObject, ObservableObject {
         }
     }
     @discardableResult private func prepareOperation(_ title: String, showSettings: Bool = true) -> CancellationToken {
-        cancellation = CancellationToken(); isWorking = true; progress = 0; resultTitle = title; progressLabel = "准备中…"; if showSettings { showWindow?() }; return cancellation
+        cancellation = CancellationToken(); presentsResults = false; isWorking = true; progress = 0; resultTitle = title; progressLabel = "准备中…"; if showSettings { showWindow?() }; return cancellation
     }
     private var progressCallback: (Int, Int, String) -> Void {
         { current, total, name in DispatchQueue.main.async { self.progress = total == 0 ? 1 : Double(current) / Double(total); self.progressLabel = "\(current) / \(total) · \(name)" } }

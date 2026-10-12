@@ -18,6 +18,7 @@ enum MenuIcons {
     private static let lock = NSLock()
     static func color(_ action: ActionID) -> NSColor {
         switch action {
+        case .newFolder: return .systemCyan
         case .newFile, .copyName, .rename: return .systemPurple
         case .copyPath: return .systemPink
         case .favorite, .paste: return .systemCyan
@@ -102,7 +103,8 @@ enum NativeMenuBuilder {
                         child.addItem(destination)
                     }
                 }
-                child.addItem(item("选择其他文件夹…", action: action, argument: "choose"))
+                child.addItem(item("复制到其他文件夹…", action: action, argument: "chooseCopy"))
+                child.addItem(item("移动到其他文件夹…", action: action, argument: "chooseMove"))
             case .compress:
                 let child = submenu(value)
                 child.addItem(item("ZIP", action: action, argument: "zip"))

@@ -1,4 +1,4 @@
-# MenuCraft 原生实现 0.5.1
+# MenuCraft 原生实现 0.5.2
 
 日期：2026-10-01。对应 v0.4 设计；旧版说明见 IMPLEMENTATION-0.3.md 与 IMPLEMENTATION-0.1.md。
 
@@ -15,7 +15,7 @@
 - SettingsSection／SettingsRow 统一设置行：标签左侧，短弹出选择器与开关右侧；表单最大 720 pt。目录默认收起，常用偏好首屏可见。侧栏保留顶部 MenuCraft 图标和名称，移除底部版本区。
 - 默认窗口外框 1000 × 700 pt，最小 860 × 620 pt。新 autosave 键迁移旧版大窗口一次，之后保存尺寸与位置；AppStorage 恢复最近页面，关键词搜索支持密码、格式、外观与设备。
 - FileNamePanel 使用独立 NSPanel，内容 380 × 188 pt，包含系统标题栏的实测外框约 380 × 216 pt。小文件图标、短说明、截断路径与完整提示，默认只选中文件名主体。实时校验，Return 创建、Escape 或关闭取消；文件创建与重名规则保留。
-- 手动归档窗口内容缩为 560 × 470 pt，确认操作的冲突选择器宽 180 pt。版本从应用元数据读取，在设置页与关于窗口显示。
+- 手动归档窗口内容缩为 560 × 470 pt。版本从应用元数据读取，在设置页与关于窗口显示。
 - 默认外观为跟随系统，AppModel 使用 NSApp.appearance = nil。原生按钮、开关和选择器保留系统默认配色；导航读取 NSColor.controlAccentColor。0.4.1 移除根视图的动态 NSColor tint 覆盖，修复 0.4.0 活动窗口下开关与选择器变红的问题。窗口背景、分隔线、正文与说明使用系统动态颜色。
 
 ## 滚动
@@ -54,7 +54,11 @@ ArchiveConfiguration 增加 extractToSameNameFolder，旧配置缺少字段时�
 
 ## 迁移与发布
 
-配置版本迁移为 3，保留旧动作开关、排序、自定义模板内容和 ID、收藏、路径及应用。首次加入压缩与解压默认动作，旧可选停用项保持停用。bundle ID、menucraft scheme 和 Application Support/MenuCraft 路径不变。
+配置版本迁移为 4，保留旧动作开关、排序、自定义模板内容和 ID、收藏、路径及应用。旧配置在新建文件前加入默认启用的新建文件夹；默认同名规则为 keepBoth。用户保存后停用的新建文件夹不会在下次启动时重新启用。bundle ID、menucraft scheme 和 Application Support/MenuCraft 路径不变。
+
+新建文件夹通过 mkdir 原子占用名称，遇到重名自动编号，点号保留在完整文件夹名中。输入面板复用文件命名面板，文件夹名称全选；创建成功后 Finder 选中新目录。
+
+移动、复制及剪切粘贴使用 configuration.transferConflictPolicy，prepareOperation 和 finishOperation 不自动呈现设置或结果窗口。Finder 非激活传递请求；选择其他目录的菜单直接区分移动和复制，选择目录后立即执行。失败仍提示错误或权限指引；跳过或取消的剪切项仍可粘贴。解除文件夹复用同名规则，保留将空目录移入废纸篓前的确认。
 
 分别提供 arm64、x86_64 和双架构主程序／界面／扩展／7zz，ad-hoc 签名严格校验。构建采用全模块优化并移除调试和局部符号。7-Zip LICENSE、完整对应源码以及 Scroll Reverser LICENSE／NOTICE 随应用提供，图标内容保留。原生应用不是网页原型。
 

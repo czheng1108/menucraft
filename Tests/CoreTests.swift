@@ -84,6 +84,18 @@ struct CoreTests {
             let hidden2 = try engine.create(template: FileTemplate.defaults[6], filename: ".gitignore", directory: folder)
             try expect(hidden.lastPathComponent == ".gitignore" && hidden2.lastPathComponent == ".gitignore 2", "Hidden filename broken")
         }
+        try test("Folder creation preserves existing entries and treats dots as part of the name") { folder in
+            let existing = folder.appendingPathComponent("资料.v1")
+            try write("existing file", existing)
+            let first = try engine.createFolder(name: "资料.v1", directory: folder)
+            let second = try engine.createFolder(name: "资料.v1", directory: folder)
+            try expect(first.lastPathComponent == "资料.v1 2" && second.lastPathComponent == "资料.v1 3", "Folder collision naming lost the full name")
+            try expect(engine.isDirectory(first) && engine.isDirectory(second) && read(existing) == "existing file", "Folder creation modified an existing entry")
+            for name in ["", " ", ".", "..", "a/b", "a:b", "a\0b"] {
+                try expectThrows("Invalid folder name accepted") { _ = try engine.createFolder(name: name, directory: folder) }
+            }
+            try expectThrows("Non-directory destination accepted") { _ = try engine.createFolder(name: "child", directory: existing) }
+        }
         try test("Invalid names rejected before writing") { folder in
             for name in ["", " ", ".", "..", "a/b", "a:b", "a\0b"] {
                 try expectThrows("Invalid filename accepted") { _ = try engine.create(template: FileTemplate.defaults[1], filename: name, directory: folder) }
@@ -213,6 +225,26 @@ struct CoreTests {
             var stale = false
             let resolved = try URL(resolvingBookmarkData: data, options: .withoutUI, relativeTo: nil, bookmarkDataIsStale: &stale)
             try expect(resolved.resolvingSymlinksInPath().path == source.resolvingSymlinksInPath().path && fm.fileExists(atPath: source.path), "Alias did not resolve original")
+        }
+        try test("Legacy settings migrate folder creation and persist transfer rules") { folder in
+            var original = AppConfiguration.defaults(home: folder)
+            original.version = 3
+            original.order = [.cut, .newFile, .copyPath]
+            original.enabled = [.cut, .copyPath]
+            original.templates = [.init(id: "custom", title: "自定义", filename: "draft.txt", content: "keep")]
+            var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as! [String: Any]
+            legacy.removeValue(forKey: "transferConflictPolicy")
+            let migrated = try JSONDecoder().decode(AppConfiguration.self, from: JSONSerialization.data(withJSONObject: legacy))
+            try expect(migrated.version == 4 && migrated.enabled.contains(.newFolder) && !migrated.enabled.contains(.newFile), "Migration reset existing action choices")
+            try expect(migrated.order.prefix(3) == [.cut, .newFolder, .newFile] && migrated.templates == original.templates && migrated.favorites == original.favorites, "Migration changed existing user settings")
+            try expect(migrated.transferConflictPolicy == .keepBoth, "Legacy settings lost the safe transfer default")
+            let store = ConfigurationStore(directory: folder)
+            var configured = migrated; configured.transferConflictPolicy = .skip; configured.enabled.removeAll { $0 == .newFolder }
+            try store.save(configured)
+            let loaded = try store.load(defaults: original)
+            try expect(loaded.transferConflictPolicy == .skip && !loaded.enabled.contains(.newFolder), "Saved transfer rule or disabled folder action was lost")
+            legacy["transferConflictPolicy"] = "unknown"
+            try expect(try JSONDecoder().decode(AppConfiguration.self, from: JSONSerialization.data(withJSONObject: legacy)).transferConflictPolicy == .keepBoth, "Unknown transfer rules failed to load safely")
         }
         try test("Configuration persists, normalizes and preserves invalid input") { folder in
             let store = ConfigurationStore(directory: folder)
