@@ -18,7 +18,7 @@ enum MenuIcons {
     private static let lock = NSLock()
     static func color(_ action: ActionID) -> NSColor {
         switch action {
-        case .newFolder: return .systemCyan
+        case .newFolder, .screenshot: return .systemCyan
         case .newFile, .copyName, .rename: return .systemPurple
         case .copyPath: return .systemPink
         case .favorite, .paste: return .systemCyan

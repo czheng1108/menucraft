@@ -235,7 +235,7 @@ struct CoreTests {
             var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as! [String: Any]
             legacy.removeValue(forKey: "transferConflictPolicy")
             let migrated = try JSONDecoder().decode(AppConfiguration.self, from: JSONSerialization.data(withJSONObject: legacy))
-            try expect(migrated.version == 4 && migrated.enabled.contains(.newFolder) && !migrated.enabled.contains(.newFile), "Migration reset existing action choices")
+            try expect(migrated.version == 5 && migrated.enabled.contains(.newFolder) && migrated.enabled.contains(.screenshot) && !migrated.enabled.contains(.newFile), "Migration reset existing action choices")
             try expect(migrated.order.prefix(3) == [.cut, .newFolder, .newFile] && migrated.templates == original.templates && migrated.favorites == original.favorites, "Migration changed existing user settings")
             try expect(migrated.transferConflictPolicy == .keepBoth, "Legacy settings lost the safe transfer default")
             let store = ConfigurationStore(directory: folder)

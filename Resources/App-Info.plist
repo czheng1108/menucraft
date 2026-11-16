@@ -42,7 +42,7 @@
 	<key>NSDocumentsFolderUsageDescription</key>
 	<string>在您选择的文稿目录中创建、移动和整理文件。</string>
 	<key>NSDownloadsFolderUsageDescription</key>
-	<string>在您选择的下载目录中整理文件。</string>
+	<string>在“下载”中保存您截取的图片和整理您选择的文件。</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSPrincipalClass</key>

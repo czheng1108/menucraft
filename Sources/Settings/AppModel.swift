@@ -13,6 +13,9 @@ final class AppModel: NSObject, ObservableObject {
     @Published var scrollRunning = false
     @Published var scrollPaused = false
     @Published var scrollStatus = "正在连接"
+    @Published private(set) var screenshotShortcutError: String?
+    @Published private(set) var screenCaptureEnabled = false
+    @Published private(set) var automationPermission = PermissionStatus.onDemand
     @Published var volumes: [Favorite] = []
     @Published var isWorking = false
     @Published var progress = 0.0
@@ -59,6 +62,9 @@ final class AppModel: NSObject, ObservableObject {
         if scrollRunning != state.scrollRunning { scrollRunning = state.scrollRunning }
         if scrollPaused != state.scrollPaused { scrollPaused = state.scrollPaused }
         if scrollStatus != state.scrollStatus { scrollStatus = state.scrollStatus }
+        if screenshotShortcutError != state.screenshotShortcutError { screenshotShortcutError = state.screenshotShortcutError }
+        if screenCaptureEnabled != (state.screenCaptureEnabled ?? false) { screenCaptureEnabled = state.screenCaptureEnabled ?? false }
+        if automationPermission != (state.automationPermission ?? .onDemand) { automationPermission = state.automationPermission ?? .onDemand }
         if volumes != state.volumes { volumes = state.volumes }
         if isWorking != state.isWorking { isWorking = state.isWorking }
         if progress != state.progress { progress = state.progress }
@@ -76,6 +82,15 @@ final class AppModel: NSObject, ObservableObject {
     private func persist() { revision += 1; send(.init(kind: "configure", revision: revision, configuration: configuration)); applyAppearance() }
     func applyAppearance() { NSApp.appearance = configuration.appearance == "auto" ? nil : NSAppearance(named: configuration.appearance == "dark" ? .darkAqua : .aqua) }
     func refreshSystemState() { send(.init(kind: "refresh")) }
+    func permissionStatus(_ permission: PermissionKind) -> PermissionStatus {
+        switch permission {
+        case .finder: return extensionEnabled ? .granted : .missing
+        case .accessibility: return accessibilityEnabled ? .granted : .missing
+        case .screenCapture: return screenCaptureEnabled ? .granted : .missing
+        case .automation: return automationPermission
+        case .files, .overview: return .onDemand
+        }
+    }
     func enableExtension() { send(.init(kind: "extension")) }
     func requestAccessibility() { send(.init(kind: "accessibility")) }
     func openPermissionSettings(_ kind: PermissionKind) { send(.init(kind: "openPermissionSettings", text: kind.rawValue)) }

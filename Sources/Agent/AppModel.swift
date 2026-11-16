@@ -16,6 +16,9 @@ final class AppModel: NSObject, ObservableObject {
     @Published var scrollRunning = false
     @Published var scrollPaused = false
     @Published var scrollStatus = "未启用"
+    @Published var screenshotShortcutError: String?
+    @Published var screenCaptureEnabled = false
+    @Published private var automationPermission = PermissionStatus.onDemand
     var scrollEvents: UInt64 = 0
     var scrollModified: UInt64 = 0
     var scrollDevice = "等待滚动"
@@ -31,6 +34,7 @@ final class AppModel: NSObject, ObservableObject {
     var showPermissions: ((PermissionKind) -> Void)?
     var showRename: (([URL]) -> Void)?
     var showArchive: (([URL], Bool, String?) -> Void)?
+    var startFolderScreenshot: ((URL) -> Void)?
     private let scrollEngine = MCScrollEngine()
     let archiveEngine = ArchiveEngine()
     private var ready = false
@@ -116,11 +120,30 @@ final class AppModel: NSObject, ObservableObject {
         if extensionEnabled != enabled { extensionEnabled = enabled }
         let accessibility = AXIsProcessTrusted()
         if accessibilityEnabled != accessibility { accessibilityEnabled = accessibility }
+        if uiConnected { refreshPresentedPermissions() }
         reconcileScroll()
         let connected = extensionEnabled && heartbeat != nil
         if extensionConnected != connected { extensionConnected = connected }
         refreshHiddenFileState()
         checkPermissions()
+    }
+    private func refreshPresentedPermissions() {
+        let screen = CGPreflightScreenCaptureAccess()
+        if screenCaptureEnabled != screen { screenCaptureEnabled = screen }
+        let terminal = configuration.terminal == "iTerm2" ? "com.googlecode.iterm2" : "com.apple.Terminal"
+        let status: PermissionStatus
+        if NSRunningApplication.runningApplications(withBundleIdentifier: terminal).isEmpty {
+            status = .onDemand
+        } else {
+            let target = NSAppleEventDescriptor(bundleIdentifier: terminal)
+            let result = AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, false)
+            switch result {
+            case noErr: status = .granted
+            case OSStatus(errAEEventNotPermitted), OSStatus(errAEEventWouldRequireUserConsent): status = .missing
+            default: status = .onDemand
+            }
+        }
+        if automationPermission != status { automationPermission = status }
     }
     func refreshSystemState(includeVolumes: Bool = false) {
         refreshHealthState()
@@ -158,6 +181,7 @@ final class AppModel: NSObject, ObservableObject {
         case .accessibility: pane = "Privacy_Accessibility"
         case .files: pane = "Privacy_FilesAndFolders"
         case .automation: pane = "Privacy_Automation"
+        case .screenCapture: pane = "Privacy_ScreenCapture"
         default: return
         }
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") { NSWorkspace.shared.open(url) }
@@ -196,7 +220,7 @@ final class AppModel: NSObject, ObservableObject {
     }
     func releasePresentationRecords() { if operationRecordPersisted { results = [] }; if renameRecordPersisted { lastRename = nil } }
     var runtimeState: RuntimeState {
-        .init(configuration: configuration, notice: notice, extensionEnabled: extensionEnabled, extensionConnected: extensionConnected, hiddenVisible: hiddenVisible, cutCount: cutFiles.count, accessibilityEnabled: accessibilityEnabled, scrollRunning: scrollRunning, scrollPaused: scrollPaused, scrollStatus: scrollStatus, volumes: volumes, isWorking: isWorking, progress: progress, progressLabel: progressLabel, resultTitle: resultTitle, results: results, presentsResults: presentsResults, lastRename: lastRename, loginEnabled: loginEnabled, archiveAvailable: archiveEngine.available)
+        .init(configuration: configuration, notice: notice, extensionEnabled: extensionEnabled, extensionConnected: extensionConnected, hiddenVisible: hiddenVisible, cutCount: cutFiles.count, accessibilityEnabled: accessibilityEnabled, scrollRunning: scrollRunning, scrollPaused: scrollPaused, scrollStatus: scrollStatus, volumes: volumes, isWorking: isWorking, progress: progress, progressLabel: progressLabel, resultTitle: resultTitle, results: results, presentsResults: presentsResults, lastRename: lastRename, loginEnabled: loginEnabled, archiveAvailable: archiveEngine.available, screenshotShortcutError: screenshotShortcutError, screenCaptureEnabled: screenCaptureEnabled, automationPermission: automationPermission)
     }
     func pauseScroll() { scrollPaused.toggle(); reconcileScroll(); checkPermissions() }
     func stopScroll() { scrollEngine.stop() }
@@ -263,6 +287,10 @@ final class AppModel: NSObject, ObservableObject {
         guard !handledRequests.contains(request.id) else { return }
         handledRequests.insert(request.id)
         if handledRequests.count > 200 { handledRequests = [request.id] }
+        if request.action == .screenshot {
+            if request.context.isBackground { startFolderScreenshot?(request.context.destination) }
+            return
+        }
         if isWorking { notice = "正在处理文件，请完成或取消当前操作后再试。"; if ![.cut, .paste, .transfer, .compress, .extract].contains(request.action) { showWindow?() }; return }
         let files = request.context.selection.map { URL(fileURLWithPath: $0) }
         let destination = actualDestination(request.context)
@@ -290,6 +318,7 @@ final class AppModel: NSObject, ObservableObject {
         case .hidden: toggleHiddenFiles()
         case .rename: showRename?(files)
         case .alias: confirmAliases(files)
+        case .screenshot: break
         }
     }
     private func actualDestination(_ context: MenuContext) -> URL {

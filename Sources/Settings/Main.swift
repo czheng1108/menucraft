@@ -97,15 +97,28 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate 
         window.contentView = NSHostingView(rootView: RenameEditor(model: model, files: files, close: { [weak self] in self?.renameWindow?.close() })); window.center(); renameWindow = window; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     func openPermissions(_ kind: PermissionKind) {
+        let permissions: [PermissionKind]
+        if kind == .overview {
+            let missing = PermissionRequirements.missing(extensionEnabled: model.extensionEnabled,
+                                                         accessibilityEnabled: model.accessibilityEnabled,
+                                                         scroll: model.configuration.scroll, paused: model.scrollPaused)
+            permissions = PermissionKind.managed.filter(missing.contains)
+        } else {
+            permissions = [kind]
+        }
+        guard !permissions.isEmpty else { return }
         NSApp.setActivationPolicy(.regular)
         let guide: NSWindow
         if let permissionWindow { guide = permissionWindow }
         else {
-            guide = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            guide = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 452, height: 180), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             guide.title = "MenuCraft · 权限指引"; guide.isReleasedWhenClosed = false; guide.delegate = self
-            guide.contentMinSize = NSSize(width: 540, height: 450); guide.center(); permissionWindow = guide
+            permissionWindow = guide
         }
-        guide.contentView = NSHostingView(rootView: PermissionGuideView(model: model, kind: kind, close: { [weak self] in self?.permissionWindow?.close() }))
+        let hosting = NSHostingView(rootView: PermissionGuideView(model: model, permissions: permissions))
+        guide.contentView = hosting
+        guide.setContentSize(hosting.fittingSize)
+        if !guide.isVisible { guide.center() }
         guide.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     func windowWillClose(_ notification: Notification) {

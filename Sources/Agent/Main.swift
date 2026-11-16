@@ -25,6 +25,9 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate {
     private var pendingWindows: [WindowRequest] = []
     private var statusItem: NSStatusItem!
     private var receivedURL = false
+    private var screenshot: ScreenshotController!
+    private var screenshotHotKey: ScreenshotHotKey!
+    private var screenshotShortcut: AnyCancellable?
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Capture the launch event before the delayed window request loses its context.
         let launchEvent = NSAppleEventManager.shared().currentAppleEvent
@@ -33,10 +36,28 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate {
             (launchEvent?.eventID == kAEOpenApplication &&
              (launchReason == keyAELaunchedAsLogInItem || launchReason == keyAELaunchedAsServiceItem))
         model = AppModel()
+        screenshot = ScreenshotController(model: model)
+        screenshotHotKey = ScreenshotHotKey { [weak self] action in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch action {
+                case .area: self.screenshot.start(.area)
+                case .window: self.screenshot.start(.window)
+                case .display: self.screenshot.start(.display)
+                case .previous: self.screenshot.start(.area, repeatRegion: true)
+                case .text: self.screenshot.start(.text)
+                }
+            }
+        }
+        screenshotShortcut = model.$configuration.map(\.screenshot.shortcuts).removeDuplicates().sink { [weak self] shortcuts in
+            guard let self else { return }
+            self.model.screenshotShortcutError = self.screenshotHotKey.register(shortcuts)
+        }
         model.showWindow = { [weak self] in self?.show(.init(kind: "settings")) }
         model.showPermissions = { [weak self] permission in self?.show(.init(kind: "permissions", argument: permission.rawValue)) }
         model.showRename = { [weak self] files in self?.show(.init(kind: "rename", files: files.map(\.path))) }
         model.showArchive = { [weak self] files, extracting, argument in self?.show(.init(kind: "archive", files: files.map(\.path), extracting: extracting, argument: argument)) }
+        model.startFolderScreenshot = { [weak self] directory in self?.startScreenshot(.area, directory: directory) }
         server = LocalServer(path: RuntimeAddress.socket)
         server.onConnect = { [weak self] peer in self?.connect(peer) }
         do { try server.start() } catch { model.showError(error); NSApp.terminate(nil); return }
@@ -49,6 +70,18 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: "MenuCraft")
         statusItem.button?.toolTip = "MenuCraft"
         let menu = NSMenu()
+        let capture = NSMenu(title: "截图")
+        for (title, selector) in [("区域截图…", #selector(captureArea)), ("窗口截图…", #selector(captureWindow)),
+                                  ("截取当前屏幕", #selector(captureDisplay)), ("重复上次区域", #selector(capturePrevious)),
+                                  ("延时 3 秒截图…", #selector(captureDelayed))] {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = self
+            capture.addItem(item)
+        }
+        let captureItem = NSMenuItem(title: "截图", action: nil, keyEquivalent: "")
+        captureItem.submenu = capture
+        menu.addItem(captureItem)
+        menu.addItem(.separator())
         for (title, selector) in [("MenuCraft设置…", #selector(showSettings)), ("管理 Finder 扩展…", #selector(manageExtension))] {
             let item = NSMenuItem(title: title, action: selector, keyEquivalent: ""); item.target = self; menu.addItem(item)
         }
@@ -124,6 +157,17 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate {
         catch { pendingWindows.removeAll(); model.showError(error) }
     }
     @objc func showSettings() { show(.init(kind: "settings")) }
+    @objc private func captureArea() { startScreenshot(.area) }
+    @objc private func captureWindow() { startScreenshot(.window) }
+    @objc private func captureDisplay() { startScreenshot(.display) }
+    @objc private func capturePrevious() { startScreenshot(.area, repeatRegion: true) }
+    @objc private func captureDelayed() { startScreenshot(.area, delay: 3) }
+    private func startScreenshot(_ mode: ScreenshotMode, repeatRegion: Bool = false, delay: TimeInterval = 0, directory: URL? = nil) {
+        // Allow the status menu to finish closing before taking the frozen frame.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.screenshot.start(mode, repeatRegion: repeatRegion, delay: delay, directory: directory)
+        }
+    }
     @objc func manageExtension() { model.enableExtension() }
     @objc func pauseScroll() { model.pauseScroll() }
     @objc func quitApp() {
@@ -144,8 +188,13 @@ final class CraftAppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showSettings(); return true }
     func applicationDidBecomeActive(_ notification: Notification) { model?.refreshSystemState() }
+    func applicationDidResignActive(_ notification: Notification) { screenshot?.applicationDeactivated() }
+    func applicationDidChangeScreenParameters(_ notification: Notification) { screenshot?.cancel() }
     func applicationWillTerminate(_ notification: Notification) {
         model?.stopScroll(); publication?.cancel()
+        screenshot?.cancel()
+        screenshotShortcut?.cancel()
+        screenshotHotKey = nil
         for peer in peers.values { peer.onClose = nil; peer.close() }
         uiProcess?.terminate(); server?.stop()
     }

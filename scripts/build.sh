@@ -44,7 +44,7 @@ for architecture in $architectures; do
       -target "$architecture-apple-macosx13.0" -sdk "$sdk_dir" \
       -import-objc-header "$project_dir/Sources/Scroll/Bridge.h" "$build_dir/MCScrollEngine-$architecture.o" \
       "$project_dir"/Sources/Core/*.swift "$project_dir"/Sources/Shared/*.swift "$project_dir"/Sources/Runtime/*.swift "$project_dir"/Sources/Agent/*.swift \
-      -framework AppKit -framework Combine -framework FinderSync -framework ServiceManagement -framework ApplicationServices -framework IOKit \
+      -framework AppKit -framework Combine -framework FinderSync -framework ServiceManagement -framework ApplicationServices -framework IOKit -framework ScreenCaptureKit -framework Carbon \
       -o "$build_dir/MenuCraft-$architecture"
     echo "Building on-demand settings ($architecture)…"
     swiftc -swift-version 5 -Osize -whole-module-optimization -parse-as-library -module-name MenuCraftSettings \

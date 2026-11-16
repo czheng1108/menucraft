@@ -36,7 +36,9 @@ struct ScrollSettingsView: View {
             SettingsToggle(title: "横向", symbol: "arrow.left.arrow.right", isOn: selection(\.horizontal))
         }
         Text("关闭设备开关，保留系统原方向。适用于普通鼠标滚轮与 Mac 触控板。").font(.callout).foregroundStyle(.secondary)
-        Label(model.accessibilityEnabled ? model.scrollStatus : "请在“权限与设置”中允许辅助功能", systemImage: model.scrollRunning ? "checkmark.circle" : "info.circle").font(.caption).foregroundStyle(.secondary)
+        if model.accessibilityEnabled {
+            Text(model.scrollStatus).font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -136,6 +138,8 @@ struct ArchiveEditor: View {
                 model.executeArchive(files: files, extracting: extracting, directory: URL(fileURLWithPath: directory, isDirectory: true), name: name, options: options, password: password, sameNameFolder: sameNameFolder)
                 password = ""; confirmation = ""; close()
             }.buttonStyle(.borderedProminent).disabled(invalid != nil || model.isWorking).keyboardShortcut(.defaultAction) }
+            PermissionLamp(permission: .files, status: model.permissionStatus(.files))
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }.padding(20).frame(width: 560, height: 470)
         .onAppear { options = model.configuration.archive; if let argument, let format = ArchiveFormat(rawValue: argument) { options.format = format; if !format.supportsEncryption { options.encrypt = false } }; directory = files.first?.deletingLastPathComponent().path ?? ""; name = files.count == 1 ? files[0].deletingPathExtension().lastPathComponent : "归档"; sameNameFolder = argument != "current"; if argument == "choose", let url = model.chooseDirectory(title: "选择解压目录", showSettings: false) { directory = url.path } }
     }

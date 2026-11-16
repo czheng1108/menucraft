@@ -14,3 +14,8 @@ swiftc -swift-version 5 -parse-as-library "$project_dir"/Sources/Core/*.swift "$
 "$project_dir/.build/MenuCraftRuntimeTests"
 swiftc -swift-version 5 -parse-as-library "$project_dir"/Sources/Core/*.swift "$project_dir/Tests/PermissionTests.swift" -framework AppKit -o "$project_dir/.build/MenuCraftPermissionTests"
 "$project_dir/.build/MenuCraftPermissionTests"
+swiftc -swift-version 5 -parse-as-library "$project_dir"/Sources/Core/*.swift \
+  "$project_dir/Sources/Agent/ScreenshotImage.swift" "$project_dir/Sources/Agent/ScreenshotCapture.swift" \
+  "$project_dir/Sources/Agent/ScreenshotEditor.swift" "$project_dir/Sources/Agent/ScreenshotStitcher.swift" \
+  "$project_dir/Tests/ScreenshotTests.swift" -framework AppKit -framework ScreenCaptureKit -o "$project_dir/.build/MenuCraftScreenshotTests"
+"$project_dir/.build/MenuCraftScreenshotTests"

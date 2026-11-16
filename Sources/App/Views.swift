@@ -2,13 +2,23 @@ import SwiftUI
 import AppKit
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case menu, scroll, archives, templates, destinations, rename, settings
+    case menu, scroll, screenshot, archives, templates, destinations, rename, settings
     var id: String { rawValue }
     var title: String {
-        switch self { case .menu: return "右键菜单"; case .scroll: return "滚动控制"; case .archives: return "压缩与解压"; case .templates: return "文件模板"; case .destinations: return "应用与路径"; case .rename: return "批量重命名"; case .settings: return "权限与设置" }
+        switch self { case .menu: return "右键菜单"; case .scroll: return "滚动控制"; case .screenshot: return "截图"; case .archives: return "压缩与解压"; case .templates: return "文件模板"; case .destinations: return "应用与路径"; case .rename: return "批量重命名"; case .settings: return "权限与设置" }
     }
     var symbol: String {
-        switch self { case .menu: return "cursorarrow.click"; case .scroll: return "computermouse"; case .archives: return "archivebox"; case .templates: return "doc.badge.plus"; case .destinations: return "square.grid.2x2"; case .rename: return "character.cursor.ibeam"; case .settings: return "slider.horizontal.3" }
+        switch self { case .menu: return "cursorarrow.click"; case .scroll: return "computermouse"; case .screenshot: return "viewfinder"; case .archives: return "archivebox"; case .templates: return "doc.badge.plus"; case .destinations: return "square.grid.2x2"; case .rename: return "character.cursor.ibeam"; case .settings: return "slider.horizontal.3" }
+    }
+    var permission: PermissionKind? {
+        switch self {
+        case .menu, .templates: return .finder
+        case .scroll: return .accessibility
+        case .screenshot: return .screenCapture
+        case .archives, .rename: return .files
+        case .destinations: return .automation
+        case .settings: return nil
+        }
     }
     func matches(_ text: String) -> Bool {
         if title.localizedCaseInsensitiveContains(text) { return true }
@@ -19,6 +29,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .destinations: keywords = "终端 收藏 常用目录 应用 移动 复制 同名 冲突 规则 跳过"
         case .templates: keywords = "新建文件 Markdown 模板"
         case .scroll: keywords = "鼠标 触控板 纵向 横向 反向 方向"
+        case .screenshot: keywords = "截屏 快捷键 选区 打码 标注 PNG 屏幕录制"
         default: keywords = title
         }
         return keywords.localizedCaseInsensitiveContains(text)
@@ -58,9 +69,6 @@ struct CraftRootView: View {
                     Button { model.configuration.sidebarCollapsed.toggle() } label: { Image(systemName: "sidebar.left").font(.system(size: 17)).frame(width: 30, height: 30) }.buttonStyle(.plain).help(model.configuration.sidebarCollapsed ? "展开侧栏" : "折叠侧栏").accessibilityLabel(model.configuration.sidebarCollapsed ? "展开侧栏" : "折叠侧栏")
                 }.padding(.horizontal, 24).frame(height: 46).background(Color(nsColor: .controlBackgroundColor))
                 Divider()
-                if !model.extensionEnabled {
-                    HStack { Image(systemName: "puzzlepiece.extension"); Text("启用 Finder 扩展，将常用操作加入右键菜单。").font(.callout); Spacer(); Button("启用右键扩展") { model.enableExtension() } }.padding(12).background(accent.opacity(0.08))
-                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         if !search.isEmpty {
@@ -72,6 +80,7 @@ struct CraftRootView: View {
                             switch page {
                             case .menu: MenuSettingsView(model: model)
                             case .scroll: ScrollSettingsView(model: model)
+                            case .screenshot: ScreenshotSettingsView(model: model)
                             case .archives: ArchiveSettingsView(model: model)
                             case .templates: TemplateSettingsView(model: model)
                             case .destinations: DestinationSettingsView(model: model)
@@ -84,7 +93,13 @@ struct CraftRootView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     if model.isWorking { HStack { ProgressView(value: model.progress); Button("取消") { model.cancelOperation() } }; Text(model.progressLabel).font(.caption).foregroundStyle(.secondary) }
-                    HStack { Circle().fill(model.scrollRunning ? Color.green : Color.secondary).frame(width: 6, height: 6); Text(model.notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled); Spacer() }
+                    HStack {
+                        Text(model.notice).font(.caption).foregroundStyle(.secondary).lineLimit(1).textSelection(.enabled)
+                        Spacer()
+                        if let permission = page.permission {
+                            PermissionLamp(permission: permission, status: model.permissionStatus(permission))
+                        }
+                    }
                 }.padding(.horizontal, 20).padding(.vertical, 10).background(Color(nsColor: .controlBackgroundColor))
             }
         // Leave native controls at their system default. Passing dynamic NSColor
@@ -295,6 +310,18 @@ struct GeneralSettingsView: View {
         return names.isEmpty ? "尚未添加目录" : names.joined(separator: "、") + " · \(model.configuration.monitored.count) 个目录"
     }
     var body: some View {
+        SettingsSection(title: "权限") {
+            ForEach(PermissionKind.managed, id: \.self) { permission in
+                SettingsRow(title: permission.title, symbol: permission.symbol) {
+                    HStack(spacing: 14) {
+                        PermissionLamp(permission: permission, status: model.permissionStatus(permission), showsName: false)
+                        Button(permission == .finder ? "管理扩展…" : "管理…") { model.openPermissionSettings(permission) }
+                            .accessibilityLabel("管理\(permission.title)")
+                    }
+                }
+                if permission != PermissionKind.managed.last { SettingsDivider() }
+            }
+        }
         SettingsSection(title: "通用") {
             SettingsToggle(title: "登录时启动", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
             SettingsDivider()
@@ -309,10 +336,6 @@ struct GeneralSettingsView: View {
             SettingsToggle(title: "复制名称时不包含扩展名", isOn: $model.configuration.nameWithoutExtension)
         }
         SettingsSection(title: "Finder 右键") {
-            SettingsRow(title: model.extensionEnabled ? "Finder 扩展已启用" : "Finder 扩展未启用", subtitle: model.extensionConnected ? "已连接，菜单随设置更新。" : "在已添加的目录打开 Finder 后连接。", symbol: "puzzlepiece.extension") {
-                Button("管理扩展…") { model.enableExtension() }
-            }
-            SettingsDivider()
             SettingsRow(title: "显示菜单的目录", subtitle: directorySummary) {
                 Button(directoriesExpanded ? "收起" : "查看目录…") { directoriesExpanded.toggle() }
             }
@@ -329,11 +352,6 @@ struct GeneralSettingsView: View {
                     }.padding(.horizontal, 14).padding(.vertical, 9)
                 }
                 HStack { Button("添加目录…") { model.addMonitoredDirectory() }; Spacer() }.controlSize(.small).padding(14)
-            }
-        }
-        SettingsSection(title: "滚动与隐藏文件") {
-            SettingsRow(title: model.accessibilityEnabled ? "辅助功能已允许" : "辅助功能尚未允许", subtitle: "用于反向滚动与切换隐藏文件。", symbol: "hand.raised") {
-                Button("查看权限…") { model.requestAccessibility() }
             }
         }
         Text(CraftIdentity.display).font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 12).padding(.top, 2)
@@ -411,6 +429,8 @@ struct RenameEditor: View {
             if let validation { Label(validation, systemImage: "exclamationmark.circle").foregroundStyle(.red).font(.callout) }
             else { Label("名称检查通过，完成后保留恢复记录。", systemImage: "checkmark.circle").foregroundStyle(.secondary).font(.callout) }
             HStack { Button("取消") { close() }; Spacer(); Button("重命名 \(files.count) 个项目") { model.executeRename(entries, completion: close) }.buttonStyle(.borderedProminent).disabled(validation != nil || model.isWorking) }
+            PermissionLamp(permission: .files, status: model.permissionStatus(.files))
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }.padding(26).frame(minWidth: 720, minHeight: 580)
     }
 }

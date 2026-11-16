@@ -23,6 +23,10 @@ struct MenuTests {
         let background = MenuContext(directory: "/tmp", selection: [], singleDirectory: false, isBackground: true)
         let backgroundMenu = NativeMenuBuilder.build(snapshot: snapshot, context: background, target: target, selector: #selector(TestMenuTarget.execute(_:)))
         try ensure(backgroundMenu.items.contains { $0.title == "新建文件夹" }, "Background menu creates folders in the current directory")
+        let captureItem = backgroundMenu.items.first { $0.title == "截图到此文件夹" }
+        let captureRequest = (captureItem?.representedObject as? String).flatMap(URL.init(string:)).flatMap { try? ActionRequest.decode($0) }
+        try ensure(captureRequest?.action == .screenshot && captureRequest?.context.destination.path == "/tmp"
+            && !menu.items.contains { $0.title == "截图到此文件夹" }, "Folder screenshot carries the background directory only")
         try ensure(actions.allSatisfy { $0.image != nil }, "Every right-click action has a native icon")
         try ensure(actions.allSatisfy { $0.image?.isTemplate == false }, "Colored menu images preserve their palette")
         try ensure(menu.items.contains { $0.title == "取消显示隐藏文件" }, "Visibility label reflects real state snapshot")

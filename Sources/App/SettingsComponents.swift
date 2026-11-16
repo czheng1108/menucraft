@@ -53,6 +53,27 @@ struct SettingsDivider: View {
     var body: some View { Divider().padding(.horizontal, 14) }
 }
 
+struct PermissionLamp: View {
+    let permission: PermissionKind
+    let status: PermissionStatus
+    var showsName = true
+
+    private var title: String {
+        let statusTitle = permission.statusTitle(status)
+        return showsName ? "\(permission.title) · \(statusTitle)" : statusTitle
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(status == .granted ? Color.green : Color.orange).frame(width: 7, height: 7)
+            Text(title).font(.caption).foregroundStyle(.secondary)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(permission.title) \(permission.statusTitle(status))")
+    }
+}
+
 extension View {
     func craftPicker() -> some View { self.pickerStyle(.menu).labelsHidden().fixedSize(horizontal: true, vertical: false).controlSize(.small) }
 }

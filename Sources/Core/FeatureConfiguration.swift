@@ -1,5 +1,81 @@
 import Foundation
 
+struct ScreenshotShortcut: Codable, Equatable {
+    struct Modifiers: OptionSet, Codable {
+        var rawValue: UInt8
+        static let control = Self(rawValue: 1 << 0)
+        static let option = Self(rawValue: 1 << 1)
+        static let shift = Self(rawValue: 1 << 2)
+        static let command = Self(rawValue: 1 << 3)
+    }
+
+    var keyCode: UInt16
+    var key: String
+    var modifiers: Modifiers
+
+    static let standard = Self(keyCode: 7, key: "X", modifiers: [.control, .command])
+    static let modifierSymbols: [(Modifiers, String)] = [(.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")]
+
+    var title: String {
+        Self.modifierSymbols.filter { modifiers.contains($0.0) }.map(\.1).joined() + key
+    }
+
+    var isValid: Bool {
+        keyCode < 128 && key.count == 1 && key.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) }
+            && !modifiers.isEmpty && modifiers != .shift && modifiers.rawValue < (1 << 4)
+    }
+}
+
+enum ScreenshotShortcutAction: String, CaseIterable {
+    case area, window, display, previous, text
+
+    var title: String {
+        switch self {
+        case .area: return "区域截图"
+        case .window: return "窗口截图"
+        case .display: return "截取当前屏幕"
+        case .previous: return "重复上次区域"
+        case .text: return "截图提取文字"
+        }
+    }
+}
+
+struct ScreenshotConfiguration: Codable, Equatable {
+    var shortcut: ScreenshotShortcut? = .standard
+    var saveDirectory: String?
+    private var additionalShortcuts: [String: ScreenshotShortcut]?
+    init() {}
+
+    func shortcut(for action: ScreenshotShortcutAction) -> ScreenshotShortcut? {
+        action == .area ? shortcut : additionalShortcuts?[action.rawValue]
+    }
+
+    mutating func setShortcut(_ value: ScreenshotShortcut?, for action: ScreenshotShortcutAction) {
+        if action == .area { shortcut = value; return }
+        var shortcuts = additionalShortcuts ?? [:]
+        shortcuts[action.rawValue] = value
+        additionalShortcuts = shortcuts.isEmpty ? nil : shortcuts
+    }
+
+    var shortcuts: [ScreenshotShortcutAction: ScreenshotShortcut] {
+        Dictionary(uniqueKeysWithValues: ScreenshotShortcutAction.allCases.compactMap { action in
+            guard let shortcut = shortcut(for: action), shortcut.isValid else { return nil }
+            return (action, shortcut)
+        })
+    }
+
+    static var defaultDirectory: URL {
+        let files = FileManager.default
+        return files.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? files.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true)
+    }
+
+    var directory: URL {
+        guard let saveDirectory, saveDirectory.hasPrefix("/") else { return Self.defaultDirectory }
+        return URL(fileURLWithPath: saveDirectory, isDirectory: true)
+    }
+}
+
 enum ConflictPolicy: String, Codable, CaseIterable {
     case keepBoth, skip
     var title: String { self == .keepBoth ? "保留两者（自动添加序号）" : "跳过同名项目" }

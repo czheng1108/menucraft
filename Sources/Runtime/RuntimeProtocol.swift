@@ -21,6 +21,9 @@ struct RuntimeState: Codable {
     var lastRename: RenameJournal?
     var loginEnabled: Bool
     var archiveAvailable: Bool
+    var screenshotShortcutError: String? = nil
+    var screenCaptureEnabled: Bool? = nil
+    var automationPermission: PermissionStatus? = nil
 }
 struct WindowRequest: Codable {
     var kind: String

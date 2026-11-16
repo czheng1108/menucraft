@@ -1,4 +1,4 @@
-MenuCraft 0.5.2 / build 13
+MenuCraft 0.5.2 / build 14
 系统要求：macOS 13 或更高；支持 Apple Silicon 与 Intel。
 
 安装
