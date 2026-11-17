@@ -3,7 +3,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 enum ScreenshotError: LocalizedError {
-    case displayUnavailable, noFrame, invalidImage, clipboard
+    case displayUnavailable, noFrame, invalidImage, clipboard, videoRegionTooSmall, videoEncoding
 
     var errorDescription: String? {
         switch self {
@@ -11,6 +11,8 @@ enum ScreenshotError: LocalizedError {
         case .noFrame: return "没有收到屏幕画面，请重试。"
         case .invalidImage: return "无法生成截图。"
         case .clipboard: return "无法写入剪贴板，请重试。"
+        case .videoRegionTooSmall: return "请框选更大的录屏区域。"
+        case .videoEncoding: return "无法生成 MP4 录屏。"
         }
     }
 }
@@ -27,7 +29,7 @@ enum ScreenshotTool: Int, CaseIterable {
         case .arrow: return "箭头"
         case .pen: return "画笔"
         case .highlight: return "荧光笔"
-        case .text: return "文字"
+        case .text: return "添加文字"
         case .cover: return "实色遮挡"
         case .mosaic: return "马赛克"
         case .number: return "序号"
@@ -43,7 +45,7 @@ enum ScreenshotTool: Int, CaseIterable {
         case .arrow: return "arrow.up.right"
         case .pen: return "scribble"
         case .highlight: return "highlighter"
-        case .text: return "textformat"
+        case .text: return "character.cursor.ibeam"
         case .cover: return "checkerboard.rectangle"
         case .mosaic: return "square.grid.3x3.fill"
         case .number: return "1.circle"
@@ -200,6 +202,7 @@ struct ScreenshotImage {
         self.pixels = pixels
         self.pointSize = pointSize
         preview = NSImage(cgImage: pixels, size: pointSize)
+        preview.cacheMode = .never
     }
 
     var bounds: CGRect { CGRect(origin: .zero, size: pointSize) }
@@ -273,6 +276,40 @@ struct ScreenshotImage {
 }
 
 enum ScreenshotOutput {
+    enum PNGDestination: Sendable {
+        case clipboard
+        case directory(URL, name: String)
+        case file(URL)
+    }
+
+    private static let encodingQueue = DispatchQueue(label: "local.menucraft.png", qos: .userInitiated)
+
+    static func exportPNG(_ image: CGImage, to destination: PNGDestination) async throws -> Data? {
+        let cancellation = CancellationToken()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                encodingQueue.async {
+                    continuation.resume(with: autoreleasepool {
+                        Result {
+                            if cancellation.cancelled { throw CancellationError() }
+                            let data = try png(image)
+                            if cancellation.cancelled { throw CancellationError() }
+                            switch destination {
+                            case .clipboard: return data
+                            case .directory(let directory, let name):
+                                _ = try save(data, in: directory, name: name, cancellation: cancellation)
+                            case .file(let url): try data.write(to: url, options: .atomic)
+                            }
+                            return nil
+                        }
+                    })
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
     static func png(_ image: CGImage) throws -> Data {
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
@@ -283,28 +320,37 @@ enum ScreenshotOutput {
         return data as Data
     }
 
-    static func copy(_ image: CGImage, to pasteboard: NSPasteboard = .general) throws {
+    static func copy(_ data: Data, type: NSPasteboard.PasteboardType, to pasteboard: NSPasteboard = .general) throws {
         let item = NSPasteboardItem()
-        guard item.setData(try png(image), forType: .png) else { throw ScreenshotError.clipboard }
+        guard item.setData(data, forType: type) else { throw ScreenshotError.clipboard }
         pasteboard.clearContents()
         guard pasteboard.writeObjects([item]) else { throw ScreenshotError.clipboard }
     }
 
-    static func fileName(at date: Date = .now) -> String {
+    static func fileName(at date: Date = .now, type: UTType = .png) -> String {
         let format = DateFormatter()
         format.locale = Locale(identifier: "en_US_POSIX")
         format.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        return "截图 \(format.string(from: date)).png"
+        let title: String
+        switch type {
+        case .gif: title = "实况截图"
+        case .mpeg4Movie: title = "录屏"
+        default: title = "截图"
+        }
+        let suffix = type.preferredFilenameExtension ?? "png"
+        return "\(title) \(format.string(from: date)).\(suffix)"
     }
 
-    static func save(_ data: Data, in directory: URL, name: String) throws -> URL {
-        let staged = directory.appendingPathComponent(".menucraft-\(UUID().uuidString).png")
+    static func save(_ data: Data, in directory: URL, name: String, cancellation: CancellationToken? = nil) throws -> URL {
+        let staged = directory.appendingPathComponent(".menucraft-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: staged) }
         try data.write(to: staged, options: .withoutOverwriting)
         let proposed = directory.appendingPathComponent(name)
         let stem = proposed.deletingPathExtension().lastPathComponent
         for suffix in 1...100 {
-            let target = suffix == 1 ? proposed : directory.appendingPathComponent("\(stem) \(suffix).png")
+            if cancellation?.cancelled == true { throw CancellationError() }
+            let target = suffix == 1 ? proposed : directory.appendingPathComponent("\(stem) \(suffix)")
+                .appendingPathExtension(proposed.pathExtension)
             let result = staged.path.withCString { from in
                 target.path.withCString { to in renamex_np(from, to, UInt32(RENAME_EXCL)) }
             }

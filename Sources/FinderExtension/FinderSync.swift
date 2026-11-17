@@ -66,17 +66,20 @@ final class MenuCraftFinderSync: FIFinderSync {
         return menu
     }
     @objc private func performMenuAction(_ sender: NSMenuItem) {
-        let url: URL?
         logger.info("Finder menu callback tag=\(sender.tag), context=\(self.requests[sender.tag] != nil)")
+        let configuration = NSWorkspace.OpenConfiguration()
+        let url: URL
         if let string = requests[sender.tag] ?? sender.representedObject as? String,
-           let reference = MenuReference.decode(string), let request = contexts.request(reference) { url = try? request.bridgeURL() }
-        else if let string = sender.representedObject as? String, string.hasPrefix("menucraft://action") { url = URL(string: string) }
-        else { url = URL(string: "menucraft://settings") }
-        if let url {
-            let configuration = NSWorkspace.OpenConfiguration()
-            if let request = try? ActionRequest.decode(url), [.cut, .paste, .transfer, .compress, .extract, .screenshot].contains(request.action) { configuration.activates = false }
-            NSWorkspace.shared.open(url, configuration: configuration)
+           let reference = MenuReference.decode(string), let request = contexts.request(reference),
+           let actionURL = try? request.bridgeURL() {
+            url = actionURL
+            configuration.activates = ![.cut, .paste, .transfer, .compress, .extract].contains(request.action)
+        } else {
+            url = URL(string: "menucraft://settings")!
         }
+        // Target the containing application even if another handler registered the URL scheme.
+        let host = Bundle.main.bundleURL.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        NSWorkspace.shared.open([url], withApplicationAt: host, configuration: configuration)
     }
     override var toolbarItemName: String { "MenuCraft" }
     override var toolbarItemToolTip: String { "配置常用右键操作" }

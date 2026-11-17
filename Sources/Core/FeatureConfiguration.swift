@@ -26,43 +26,9 @@ struct ScreenshotShortcut: Codable, Equatable {
     }
 }
 
-enum ScreenshotShortcutAction: String, CaseIterable {
-    case area, window, display, previous, text
-
-    var title: String {
-        switch self {
-        case .area: return "区域截图"
-        case .window: return "窗口截图"
-        case .display: return "截取当前屏幕"
-        case .previous: return "重复上次区域"
-        case .text: return "截图提取文字"
-        }
-    }
-}
-
 struct ScreenshotConfiguration: Codable, Equatable {
     var shortcut: ScreenshotShortcut? = .standard
     var saveDirectory: String?
-    private var additionalShortcuts: [String: ScreenshotShortcut]?
-    init() {}
-
-    func shortcut(for action: ScreenshotShortcutAction) -> ScreenshotShortcut? {
-        action == .area ? shortcut : additionalShortcuts?[action.rawValue]
-    }
-
-    mutating func setShortcut(_ value: ScreenshotShortcut?, for action: ScreenshotShortcutAction) {
-        if action == .area { shortcut = value; return }
-        var shortcuts = additionalShortcuts ?? [:]
-        shortcuts[action.rawValue] = value
-        additionalShortcuts = shortcuts.isEmpty ? nil : shortcuts
-    }
-
-    var shortcuts: [ScreenshotShortcutAction: ScreenshotShortcut] {
-        Dictionary(uniqueKeysWithValues: ScreenshotShortcutAction.allCases.compactMap { action in
-            guard let shortcut = shortcut(for: action), shortcut.isValid else { return nil }
-            return (action, shortcut)
-        })
-    }
 
     static var defaultDirectory: URL {
         let files = FileManager.default
@@ -122,10 +88,14 @@ enum ArchiveFormat: String, Codable, CaseIterable, Identifiable {
         let name = URL(fileURLWithPath: path).lastPathComponent.lowercased()
         return ["zip","7z","tar","gz","tgz","bz2","tbz","tbz2","xz","txz","rar","001"].contains(URL(fileURLWithPath: path).pathExtension.lowercased()) || name.hasSuffix(".zip.001") || name.hasSuffix(".7z.001")
     }
+    static func nameWithoutFirstVolume(_ name: String) -> String {
+        name.hasSuffix(".001") ? String(name.dropLast(4)) : name
+    }
     static func stem(_ name: String) -> String {
-        let lower = name.lowercased()
-        for suffix in [".tar.gz",".tar.bz2",".tar.xz",".7z.001",".zip.001",".tgz",".tbz2",".tbz",".txz",".tar",".zip",".7z",".gz",".bz2",".xz"] {
-            if lower.hasSuffix(suffix) { return String(name.dropLast(suffix.count)) }
+        let archiveName = nameWithoutFirstVolume(name)
+        let lower = archiveName.lowercased()
+        for suffix in [".tar.gz",".tar.bz2",".tar.xz",".tgz",".tbz2",".tbz",".txz",".tar",".zip",".7z",".gz",".bz2",".xz"] {
+            if lower.hasSuffix(suffix) { return String(archiveName.dropLast(suffix.count)) }
         }
         if let range = name.range(of: #"(?i)\.part\d+\.rar$"#, options: .regularExpression) { return String(name[..<range.lowerBound]) }
         return URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent

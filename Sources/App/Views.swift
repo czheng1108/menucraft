@@ -389,7 +389,8 @@ struct RenameEditor: View {
     @State private var replacement = ""
     @State private var keepExtension = true
     var entries: [RenameEntry] {
-        files.enumerated().map { index, file in
+        if mode == "sequence", !(1...999_999).contains(start) { return [] }
+        return files.enumerated().map { index, file in
             let isFolder = FileOperations().isDirectory(file)
             let ext = keepExtension && !isFolder && !file.lastPathComponent.hasPrefix(".") ? file.pathExtension : ""
             let base = ext.isEmpty ? file.lastPathComponent : file.deletingPathExtension().lastPathComponent
@@ -400,18 +401,23 @@ struct RenameEditor: View {
             default: name = base
             }
             let numbered: String
-            if mode == "sequence" { numbered = prefix + String(repeating: "0", count: max(0, digits - String(start + index).count)) + String(start + index) + suffix }
-            else { numbered = name }
+            if mode == "sequence" {
+                let number = String(start + index)
+                numbered = prefix + String(repeating: "0", count: max(0, digits - number.count)) + number + suffix
+            } else { numbered = name }
             return .init(source: file.path, destination: file.deletingLastPathComponent().appendingPathComponent(numbered + (ext.isEmpty ? "" : "." + ext)).path)
         }
     }
-    var validation: String? {
+    private func validation(for entries: [RenameEntry]) -> String? {
         if mode == "replace" && search.isEmpty { return "请输入要替换的文字。" }
-        if start < 1 || start > 999999 { return "起始序号应为 1–999999。" }
+        if mode == "sequence", !(1...999_999).contains(start) { return "起始序号应为 1–999999。" }
         do { try FileOperations().validateRename(entries); return nil } catch { return error.localizedDescription }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        let entries = self.entries
+        let validation = self.validation(for: entries)
+        let isRenaming = model.isWorking && model.resultTitle == "批量重命名"
+        return VStack(alignment: .leading, spacing: 18) {
             PageHeading(title: "批量重命名", subtitle: "\(files.count) 个项目，执行前检查完整预览。")
             Picker("规则", selection: $mode) { Text("连续序号").tag("sequence"); Text("添加前后缀").tag("affix"); Text("文字替换").tag("replace") }.pickerStyle(.segmented)
             if mode == "replace" { HStack { TextField("查找文字", text: $search); TextField("替换为", text: $replacement) }.textFieldStyle(.roundedBorder) }
@@ -428,7 +434,15 @@ struct RenameEditor: View {
             }.frame(minHeight: 210)
             if let validation { Label(validation, systemImage: "exclamationmark.circle").foregroundStyle(.red).font(.callout) }
             else { Label("名称检查通过，完成后保留恢复记录。", systemImage: "checkmark.circle").foregroundStyle(.secondary).font(.callout) }
-            HStack { Button("取消") { close() }; Spacer(); Button("重命名 \(files.count) 个项目") { model.executeRename(entries, completion: close) }.buttonStyle(.borderedProminent).disabled(validation != nil || model.isWorking) }
+            HStack {
+                Button("取消") {
+                    if isRenaming { model.cancelOperation() }
+                    else { close() }
+                }
+                Spacer()
+                Button("重命名 \(files.count) 个项目") { model.executeRename(entries, completion: close) }
+                    .buttonStyle(.borderedProminent).disabled(validation != nil || model.isWorking)
+            }
             PermissionLamp(permission: .files, status: model.permissionStatus(.files))
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }.padding(26).frame(minWidth: 720, minHeight: 580)

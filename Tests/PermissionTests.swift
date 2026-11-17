@@ -7,14 +7,12 @@ struct PermissionTests {
         func missing(_ finder: Bool, _ accessibility: Bool, _ configuration: ScrollConfiguration = .init(), _ paused: Bool = false) -> Set<PermissionKind> {
             PermissionRequirements.missing(extensionEnabled: finder, accessibilityEnabled: accessibility, scroll: configuration, paused: paused)
         }
-        guard missing(true, true).isEmpty, missing(false, false) == [.finder, .accessibility] else { fatalError("Startup permission requirements incorrect") }
+        guard missing(true, true).isEmpty, missing(false, false) == [.finder, .accessibility] else { fatalError("Finder and scroll permission requirements incorrect") }
         var disabled = scroll; disabled.mouse = false; disabled.trackpad = false
         guard missing(true, false, disabled).isEmpty, missing(true, false, scroll, true).isEmpty else { fatalError("Inactive scrolling requests unnecessary authorization") }
         disabled = scroll; disabled.vertical = false; disabled.horizontal = false
         guard missing(true, false, disabled).isEmpty else { fatalError("Disabled directions request authorization") }
-        var prompts = PermissionPromptState()
-        guard prompts.shouldPresent([.finder, .accessibility]), !prompts.shouldPresent([.finder, .accessibility]), !prompts.shouldPresent([.accessibility]), !prompts.shouldPresent([]), prompts.shouldPresent([.accessibility]) else { fatalError("Dismissal, authorization, or revocation repeats or suppresses the wrong prompt") }
-        print("PASS Missing permissions prompt once; authorized and inactive configurations stay quiet; revocation prompts again")
+        print("PASS Permission overview lists Finder and enabled scrolling only")
 
         let denied = CocoaError(.fileWriteNoPermission)
         let wrapped = NSError(domain: "Operation", code: 1, userInfo: [NSUnderlyingErrorKey: denied])

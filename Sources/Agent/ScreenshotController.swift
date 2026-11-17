@@ -3,33 +3,26 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class ScreenshotController {
-    private struct Region {
-        let display: CGDirectDisplayID
-        let frame: CGRect
-        let pixelsWide: Int
-        let rect: CGRect
-    }
-
     private weak var model: AppModel?
     private var captureTask: Task<Void, Never>?
     private var panel: ScreenshotPanel?
     private var previousApp: NSRunningApplication?
     private var saveDialogOpen = false
     private var recognitionTask: Task<Void, Never>?
-    private var scrolling: ScreenshotScrolling?
+    private var pngTask: Task<Void, Never>?
+    private var gifRecording: ScreenshotGIFRecording?
+    private var videoRecording: ScreenshotVideoRecording?
+    private var videoSaveTask: Task<Void, Never>?
     private var pins: [UUID: ScreenshotPin] = [:]
-    private var lastRegion: Region?
-    private var directoryOverride: URL?
 
     init(model: AppModel) { self.model = model }
 
-    func start(_ mode: ScreenshotMode, repeatRegion: Bool = false, delay: TimeInterval = 0, directory: URL? = nil) {
+    func start() {
         guard captureTask == nil, panel == nil else { return }
         captureTask = Task { [weak self] in
             guard let self else { return }
             defer { captureTask = nil }
             do {
-                if delay > 0 { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
                 let allowed = CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess()
                 model?.screenCaptureEnabled = allowed
                 guard allowed else {
@@ -40,15 +33,7 @@ final class ScreenshotController {
                 previousApp = active?.processIdentifier == getpid() ? nil : active
                 let snapshot = try await ScreenshotCapture.snapshot()
                 try Task.checkCancellation()
-                directoryOverride = directory
-                let initial: CGRect?
-                if repeatRegion, let lastRegion, lastRegion.display == snapshot.displayID,
-                   lastRegion.frame == snapshot.screenFrame, lastRegion.pixelsWide == snapshot.image.pixels.width {
-                    initial = lastRegion.rect
-                } else {
-                    initial = nil
-                }
-                present(snapshot, mode: mode, initialSelection: initial)
+                present(snapshot)
             } catch is CancellationError {
                 previousApp = nil
             } catch {
@@ -61,7 +46,6 @@ final class ScreenshotController {
 
     func cancel() {
         captureTask?.cancel()
-        if let sheet = panel?.attachedSheet { panel?.endSheet(sheet, returnCode: .cancel) }
         finish()
     }
 
@@ -70,47 +54,45 @@ final class ScreenshotController {
         finish()
     }
 
-    private func present(_ snapshot: ScreenshotSnapshot, mode: ScreenshotMode, initialSelection: CGRect? = nil, longImage: Bool = false) {
+    private func present(_ snapshot: ScreenshotSnapshot) {
         let panel = ScreenshotPanel(contentRect: snapshot.screenFrame, styleMask: [.borderless],
                                     backing: .buffered, defer: false)
-        panel.title = longImage ? "MenuCraft 长截图" : "MenuCraft 截图"
+        panel.title = "MenuCraft 截图"
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.hasShadow = false
         panel.level = .popUpMenu
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.acceptsMouseMovedEvents = true
-        let editor = ScreenshotEditor(snapshot: snapshot, mode: mode, initialSelection: initialSelection)
+        let editor = ScreenshotEditor(snapshot: snapshot)
         editor.onCancel = { [weak self] in self?.cancel() }
         editor.onCopy = { [weak self] editor in self?.copy(editor) }
         editor.onSave = { [weak self] editor, chooseFile in self?.save(editor, chooseFile: chooseFile) }
         editor.onPin = { [weak self] editor in self?.pin(editor) }
         editor.onText = { [weak self] editor, covers in self?.recognize(editor, covers: covers) }
-        if longImage {
-            let viewport = NSScrollView(frame: CGRect(origin: .zero, size: snapshot.screenFrame.size))
-            viewport.hasVerticalScroller = true
-            viewport.drawsBackground = true
-            viewport.backgroundColor = .windowBackgroundColor
-            viewport.documentView = editor
-            panel.contentView = viewport
-            editor.watchViewport(viewport.contentView)
-        } else {
-            editor.onScroll = { [weak self] editor in self?.longCapture(editor) }
-            panel.contentView = editor
-        }
+        editor.onRecordGIF = { [weak self] editor in self?.recordGIF(editor) }
+        editor.onRecordVideo = { [weak self] editor in self?.recordVideo(editor) }
+        panel.contentView = editor
         self.panel = panel
+        showEditor(editor, in: panel)
+        editor.updatePointerFromWindow()
+    }
+
+    private func showEditor(_ editor: ScreenshotEditor, in panel: ScreenshotPanel) {
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(editor)
     }
 
+    private func hideEditor(_ panel: ScreenshotPanel) {
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        panel.orderOut(nil)
+        restoreFocus()
+    }
+
     private func copy(_ editor: ScreenshotEditor) {
-        guard !saveDialogOpen else { return }
-        do {
-            try ScreenshotOutput.copy(editor.render())
-            remember(editor)
-            finish()
-        } catch { editor.showNotice(error.localizedDescription) }
+        exportPNG(editor, to: .clipboard)
     }
 
     private func pin(_ editor: ScreenshotEditor) {
@@ -120,14 +102,13 @@ final class ScreenshotController {
             let id = UUID()
             pins[id] = pin
             pin.onClose = { [weak self] in self?.pins.removeValue(forKey: id) }
-            remember(editor)
             finish()
             pin.show()
         } catch { editor.showNotice(error.localizedDescription) }
     }
 
     private func recognize(_ editor: ScreenshotEditor, covers: Bool) {
-        guard let panel, !saveDialogOpen, recognitionTask == nil else { return }
+        guard let panel, panel.attachedSheet == nil, !saveDialogOpen, recognitionTask == nil else { return }
         do {
             let image = try editor.render()
             let revision = editor.revision
@@ -138,11 +119,11 @@ final class ScreenshotController {
                 do {
                     let result = try await ScreenshotText.recognize(image, findPrivateRegions: covers)
                     try Task.checkCancellation()
-                    guard let panel, let editor, self.panel === panel, !saveDialogOpen else { return }
+                    guard let panel, let editor, self.panel === panel, panel.attachedSheet == nil, !saveDialogOpen else { return }
                     editor.showNotice(nil)
-                    guard editor.revision == revision else { return }
+                    guard editor.canUseRecognition(revision: revision) else { return }
                     if covers {
-                        suggestCovers(result.privateRegions, in: editor, window: panel)
+                        suggestCovers(result.privateRegions, in: editor, window: panel, revision: revision)
                     } else if result.text.isEmpty {
                         editor.showNotice("这张截图里没有识别到文字。")
                     } else {
@@ -156,7 +137,7 @@ final class ScreenshotController {
         } catch { editor.showNotice(error.localizedDescription) }
     }
 
-    private func suggestCovers(_ boxes: [CGRect], in editor: ScreenshotEditor, window: ScreenshotPanel) {
+    private func suggestCovers(_ boxes: [CGRect], in editor: ScreenshotEditor, window: ScreenshotPanel, revision: Int) {
         guard let selection = editor.selection else { return }
         let source = editor.snapshot.image
         let crop = source.pixelRect(for: selection)
@@ -174,93 +155,224 @@ final class ScreenshotController {
         alert.informativeText = "黄色框标出了识别出的候选位置。"
         alert.addButton(withTitle: "应用遮挡")
         alert.addButton(withTitle: "取消")
-        alert.beginSheetModal(for: window) { [weak editor] response in
-            editor?.previewCovers([])
-            if response == .alertFirstButtonReturn { editor?.applyCovers(rects) }
+        alert.beginSheetModal(for: window) { [weak self, weak editor, weak window] response in
+            guard let editor, let window, self?.panel === window else { return }
+            editor.previewCovers([])
+            if response == .alertFirstButtonReturn, editor.canUseRecognition(revision: revision) {
+                editor.applyCovers(rects)
+            }
         }
     }
 
-    private func longCapture(_ editor: ScreenshotEditor) {
-        guard let panel, let selection = editor.selection, scrolling == nil, !saveDialogOpen else { return }
-        guard selection.width >= 45, selection.height >= 55 else {
-            editor.showNotice("请框选一块更大的滚动内容。")
+    private func recordGIF(_ editor: ScreenshotEditor) {
+        guard let panel, let selection = editor.selection, gifRecording == nil, videoRecording == nil, !saveDialogOpen else { return }
+        guard !editor.hasAnnotations else {
+            editor.showNotice("请在添加标注或打码前录制 GIF。")
             return
         }
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        panel.orderOut(nil)
-        restoreFocus()
-        let snapshot = editor.snapshot
-        let scrolling = ScreenshotScrolling(snapshot: snapshot, selection: selection)
-        self.scrolling = scrolling
-        scrolling.completion = { [weak self, weak panel, weak editor] pixels in
-            guard let self, let panel, self.panel === panel else { return }
-            self.scrolling = nil
-            if let pixels {
-                let width = min(snapshot.screenFrame.width - 36, max(450, CGFloat(pixels.width) / snapshot.image.scaleX))
-                let size = CGSize(width: width, height: width * CGFloat(pixels.height) / CGFloat(pixels.width))
-                let long = ScreenshotSnapshot(image: ScreenshotImage(pixels: pixels, pointSize: size),
-                                              screenFrame: snapshot.screenFrame, displayID: snapshot.displayID, windows: [])
-                present(long, mode: .display, longImage: true)
+        hideEditor(panel)
+        let recording = ScreenshotGIFRecording(snapshot: editor.snapshot, selection: selection)
+        gifRecording = recording
+        recording.completion = { [weak self, weak panel, weak editor] result in
+            guard let self, let panel, let editor, self.panel === panel else { return }
+            self.gifRecording = nil
+            showEditor(editor, in: panel)
+            switch result {
+            case .success(let data): previewGIF(data, in: editor)
+            case .failure(let error): editor.showNotice("实况截图失败：\(error.localizedDescription)")
+            case nil: break
+            }
+        }
+        recording.start()
+    }
+
+    private func recordVideo(_ editor: ScreenshotEditor) {
+        guard let panel, let selection = editor.selection, gifRecording == nil, videoRecording == nil, !saveDialogOpen else { return }
+        guard !editor.hasAnnotations else {
+            editor.showNotice("请在添加标注或打码前开始录屏。")
+            return
+        }
+        hideEditor(panel)
+        let recording = ScreenshotVideoRecording(snapshot: editor.snapshot, selection: selection)
+        videoRecording = recording
+        recording.completion = { [weak self, weak panel, weak editor] result in
+            guard let self, let panel, let editor, self.panel === panel else { return }
+            videoRecording = nil
+            showEditor(editor, in: panel)
+            switch result {
+            case .success(let movie): saveVideo(movie, in: editor)
+            case .failure(let error): editor.showNotice("录屏失败：\(error.localizedDescription)")
+            case nil: break
+            }
+        }
+        recording.start()
+    }
+
+    private func previewGIF(_ data: Data, in editor: ScreenshotEditor, message: String = "") {
+        guard let panel else { return }
+        guard let image = NSImage(data: data), image.size.width > 0, image.size.height > 0 else {
+            editor.showNotice(ScreenshotError.invalidImage.localizedDescription)
+            return
+        }
+        let scale = min(1, 440 / image.size.width, 250 / image.size.height)
+        let preview = NSImageView(frame: CGRect(x: 0, y: 0, width: image.size.width * scale, height: image.size.height * scale))
+        preview.image = image
+        preview.imageScaling = .scaleProportionallyUpOrDown
+        preview.animates = true
+        preview.setAccessibilityLabel("GIF 预览")
+        let alert = NSAlert()
+        alert.messageText = "实况截图"
+        alert.informativeText = message
+        alert.accessoryView = preview
+        alert.addButton(withTitle: "复制 GIF").keyEquivalent = "\r"
+        let saveButton = alert.addButton(withTitle: "保存 GIF…")
+        saveButton.keyEquivalent = "s"
+        saveButton.keyEquivalentModifierMask = .command
+        alert.addButton(withTitle: "返回").keyEquivalent = "\u{1b}"
+        alert.beginSheetModal(for: panel) { [weak self, weak editor, weak panel] response in
+            guard let self, let editor, let panel, self.panel === panel else { return }
+            switch response {
+            case .alertFirstButtonReturn:
+                do {
+                    try ScreenshotOutput.copy(data, type: ScreenshotGIF.pasteboardType)
+                    finish()
+                } catch {
+                    previewGIF(data, in: editor, message: error.localizedDescription)
+                }
+            case .alertSecondButtonReturn: save(editor, chooseFile: true, gif: data)
+            default: panel.makeFirstResponder(editor)
+            }
+        }
+    }
+
+    private var saveDirectory: URL { model?.configuration.screenshot.directory ?? ScreenshotConfiguration.defaultDirectory }
+
+    private func savePanel(title: String, type: UTType) -> NSSavePanel {
+        let dialog = NSSavePanel()
+        dialog.title = title
+        dialog.allowedContentTypes = [type]
+        dialog.nameFieldStringValue = ScreenshotOutput.fileName(type: type)
+        dialog.directoryURL = saveDirectory
+        dialog.canCreateDirectories = true
+        return dialog
+    }
+
+    private func saveVideo(_ movie: ScreenshotMovieFile, in editor: ScreenshotEditor) {
+        guard let panel, !saveDialogOpen else { return }
+        let dialog = savePanel(title: "保存录屏", type: .mpeg4Movie)
+        saveDialogOpen = true
+        dialog.beginSheetModal(for: panel) { [weak self, weak editor, weak panel] response in
+            guard let self, let editor, let panel, self.panel === panel else { return }
+            guard response == .OK, let destination = dialog.url else {
+                saveDialogOpen = false
+                retryVideoSave(movie, in: editor)
+                return
+            }
+            editor.showNotice("正在保存 MP4…")
+            videoSaveTask = Task { [weak self, weak editor, weak panel] in
+                do {
+                    try await movie.save(to: destination)
+                    guard let self, let panel, self.panel === panel else { return }
+                    videoSaveTask = nil
+                    finish()
+                } catch {
+                    guard let self, let editor, let panel, self.panel === panel, !Task.isCancelled else { return }
+                    videoSaveTask = nil
+                    saveDialogOpen = false
+                    retryVideoSave(movie, in: editor, message: error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func retryVideoSave(_ movie: ScreenshotMovieFile, in editor: ScreenshotEditor, message: String? = nil) {
+        guard let panel else { return }
+        let alert = NSAlert()
+        alert.messageText = message == nil ? "保存这段录屏？" : "录屏保存失败"
+        if let message { alert.informativeText = message }
+        alert.addButton(withTitle: "保存 MP4…")
+        alert.addButton(withTitle: "放弃录屏")
+        alert.beginSheetModal(for: panel) { [weak self, weak editor, weak panel] response in
+            guard let self, let editor, let panel, self.panel === panel else { return }
+            if response == .alertFirstButtonReturn { saveVideo(movie, in: editor) }
+            else { finish() }
+        }
+    }
+
+    private func save(_ editor: ScreenshotEditor, chooseFile: Bool, gif: Data? = nil) {
+        guard let panel, !saveDialogOpen else { return }
+        let type: UTType = gif == nil ? .png : .gif
+        guard chooseFile || gif != nil else {
+            exportPNG(editor, to: .directory(saveDirectory, name: ScreenshotOutput.fileName()))
+            return
+        }
+        let dialog = savePanel(title: gif == nil ? "另存截图" : "保存 GIF", type: type)
+        saveDialogOpen = true
+        dialog.beginSheetModal(for: panel) { [weak self, weak editor, weak panel] response in
+            guard let self, let editor, let panel, self.panel === panel else { return }
+            saveDialogOpen = false
+            guard response == .OK, let url = dialog.url else {
+                if let gif { previewGIF(gif, in: editor) }
+                else { panel.makeFirstResponder(editor) }
+                return
+            }
+            if let gif {
+                do {
+                    try gif.write(to: url, options: .atomic)
+                    finish()
+                } catch { previewGIF(gif, in: editor, message: "保存失败：\(error.localizedDescription)") }
             } else {
-                NSApp.activate(ignoringOtherApps: true)
-                panel.makeKeyAndOrderFront(nil)
+                exportPNG(editor, to: .file(url))
+            }
+        }
+    }
+
+    private func exportPNG(_ editor: ScreenshotEditor, to destination: ScreenshotOutput.PNGDestination) {
+        guard let panel, !saveDialogOpen, pngTask == nil else { return }
+        let copying: Bool
+        if case .clipboard = destination { copying = true } else { copying = false }
+        let image: CGImage
+        do {
+            image = try editor.render()
+        } catch {
+            editor.showNotice(error.localizedDescription)
+            return
+        }
+        saveDialogOpen = true
+        editor.showNotice(copying ? "正在复制 PNG…" : "正在保存 PNG…")
+        pngTask = Task { [weak self, weak editor, weak panel] in
+            do {
+                let data = try await ScreenshotOutput.exportPNG(image, to: destination)
+                guard let self, let panel, self.panel === panel, !Task.isCancelled else { return }
+                if let data { try ScreenshotOutput.copy(data, type: .png) }
+                pngTask = nil
+                finish()
+            } catch {
+                guard let self, let editor, let panel, self.panel === panel, !Task.isCancelled else { return }
+                pngTask = nil
+                saveDialogOpen = false
+                let message = copying ? error.localizedDescription : "保存失败：\(error.localizedDescription) 可用 ⇧⌘S 换个位置。"
+                editor.showNotice(message)
                 panel.makeFirstResponder(editor)
             }
-        }
-        scrolling.start()
-    }
-
-    private func remember(_ editor: ScreenshotEditor) {
-        guard editor.onScroll != nil, let selection = editor.selection else { return }
-        let snapshot = editor.snapshot
-        lastRegion = Region(display: snapshot.displayID, frame: snapshot.screenFrame, pixelsWide: snapshot.image.pixels.width,
-                            rect: selection)
-    }
-
-    private func save(_ editor: ScreenshotEditor, chooseFile: Bool) {
-        guard let panel, !saveDialogOpen else { return }
-        let directory = directoryOverride ?? model?.configuration.screenshot.directory ?? ScreenshotConfiguration.defaultDirectory
-        let name = ScreenshotOutput.fileName()
-        if chooseFile {
-            let dialog = NSSavePanel()
-            dialog.title = "另存截图"
-            dialog.allowedContentTypes = [.png]
-            dialog.nameFieldStringValue = name
-            dialog.directoryURL = directory
-            dialog.canCreateDirectories = true
-            saveDialogOpen = true
-            dialog.beginSheetModal(for: panel) { [weak self, weak editor] response in
-                guard let self, let editor else { return }
-                saveDialogOpen = false
-                guard response == .OK, let url = dialog.url else { self.panel?.makeFirstResponder(editor); return }
-                write(editor) { data in try data.write(to: url, options: .atomic) }
-            }
-        } else {
-            write(editor) { data in _ = try ScreenshotOutput.save(data, in: directory, name: name) }
-        }
-    }
-
-    private func write(_ editor: ScreenshotEditor, publish: (Data) throws -> Void) {
-        do {
-            try publish(ScreenshotOutput.png(editor.render()))
-            remember(editor)
-            finish()
-        } catch {
-            editor.showNotice("保存失败：\(error.localizedDescription) 可用 ⇧⌘S 换个位置。")
-            panel?.makeFirstResponder(editor)
         }
     }
 
     private func finish() {
         recognitionTask?.cancel()
         recognitionTask = nil
-        scrolling?.stop()
-        scrolling = nil
-        panel?.orderOut(nil)
+        pngTask?.cancel()
+        pngTask = nil
+        gifRecording?.stop()
+        gifRecording = nil
+        videoRecording?.stop()
+        videoRecording = nil
+        videoSaveTask?.cancel()
+        videoSaveTask = nil
+        let closing = panel
         panel = nil
         saveDialogOpen = false
-        directoryOverride = nil
+        closing?.closeEditor()
         restoreFocus()
         previousApp = nil
     }

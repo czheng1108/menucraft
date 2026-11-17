@@ -34,7 +34,6 @@ final class AppModel: NSObject, ObservableObject {
     var showPermissions: ((PermissionKind) -> Void)?
     var showRename: (([URL]) -> Void)?
     var showArchive: (([URL], Bool, String?) -> Void)?
-    var startFolderScreenshot: ((URL) -> Void)?
     private let scrollEngine = MCScrollEngine()
     let archiveEngine = ArchiveEngine()
     private var ready = false
@@ -50,7 +49,6 @@ final class AppModel: NSObject, ObservableObject {
     var uiConnected = false
     private var lastDiagnosticsKey = ""
     private var lastSnapshot: Data?
-    private var permissionPrompts = PermissionPromptState()
     private var renameRecordPersisted = true
     private var operationRecordPersisted = true
     private let logger = Logger(subsystem: "local.menucraft.app", category: "runtime")
@@ -90,7 +88,7 @@ final class AppModel: NSObject, ObservableObject {
     var snapshot: MenuSnapshot { .init(configuration: configuration, volumes: volumes, hiddenVisible: hiddenVisible, cutCount: cutFiles.count) }
     var loginEnabled: Bool { SMAppService.mainApp.status == .enabled }
     func persist() {
-        do { try store.save(configuration); notice = "设置已保存"; applyAppearance(); reconcileScroll(); broadcastSnapshot(); checkPermissions() }
+        do { try store.save(configuration); notice = "设置已保存"; applyAppearance(); reconcileScroll(); broadcastSnapshot() }
         catch { notice = "保存失败：\(error.localizedDescription)" }
     }
     func applyAppearance() {
@@ -125,7 +123,6 @@ final class AppModel: NSObject, ObservableObject {
         let connected = extensionEnabled && heartbeat != nil
         if extensionConnected != connected { extensionConnected = connected }
         refreshHiddenFileState()
-        checkPermissions()
     }
     private func refreshPresentedPermissions() {
         let screen = CGPreflightScreenCaptureAccess()
@@ -161,11 +158,6 @@ final class AppModel: NSObject, ObservableObject {
         let value = CFPreferencesCopyAppValue("AppleShowAllFiles" as CFString, "com.apple.finder" as CFString)
         let visible = (value as? NSNumber)?.boolValue ?? (value as? String).map { ["true", "yes", "1"].contains($0.lowercased()) } ?? false
         if visible != hiddenVisible { hiddenVisible = visible; broadcastSnapshot() }
-    }
-    @discardableResult func checkPermissions() -> Bool {
-        let missing = PermissionRequirements.missing(extensionEnabled: extensionEnabled, accessibilityEnabled: accessibilityEnabled, scroll: configuration.scroll, paused: scrollPaused)
-        if let showPermissions, permissionPrompts.shouldPresent(missing) { showPermissions(.overview) }
-        return !missing.isEmpty
     }
     func enableExtension() {
         if extensionEnabled { openPermissionSettings(.finder) }
@@ -222,7 +214,7 @@ final class AppModel: NSObject, ObservableObject {
     var runtimeState: RuntimeState {
         .init(configuration: configuration, notice: notice, extensionEnabled: extensionEnabled, extensionConnected: extensionConnected, hiddenVisible: hiddenVisible, cutCount: cutFiles.count, accessibilityEnabled: accessibilityEnabled, scrollRunning: scrollRunning, scrollPaused: scrollPaused, scrollStatus: scrollStatus, volumes: volumes, isWorking: isWorking, progress: progress, progressLabel: progressLabel, resultTitle: resultTitle, results: results, presentsResults: presentsResults, lastRename: lastRename, loginEnabled: loginEnabled, archiveAvailable: archiveEngine.available, screenshotShortcutError: screenshotShortcutError, screenCaptureEnabled: screenCaptureEnabled, automationPermission: automationPermission)
     }
-    func pauseScroll() { scrollPaused.toggle(); reconcileScroll(); checkPermissions() }
+    func pauseScroll() { scrollPaused.toggle(); reconcileScroll() }
     func stopScroll() { scrollEngine.stop() }
     func chooseArchiveFiles(extract: Bool) {
         let panel = NSOpenPanel(); panel.title = extract ? "选择压缩包" : "选择要压缩的项目"; panel.canChooseDirectories = !extract; panel.canChooseFiles = true; panel.allowsMultipleSelection = true
@@ -287,10 +279,6 @@ final class AppModel: NSObject, ObservableObject {
         guard !handledRequests.contains(request.id) else { return }
         handledRequests.insert(request.id)
         if handledRequests.count > 200 { handledRequests = [request.id] }
-        if request.action == .screenshot {
-            if request.context.isBackground { startFolderScreenshot?(request.context.destination) }
-            return
-        }
         if isWorking { notice = "正在处理文件，请完成或取消当前操作后再试。"; if ![.cut, .paste, .transfer, .compress, .extract].contains(request.action) { showWindow?() }; return }
         let files = request.context.selection.map { URL(fileURLWithPath: $0) }
         let destination = actualDestination(request.context)
@@ -318,7 +306,6 @@ final class AppModel: NSObject, ObservableObject {
         case .hidden: toggleHiddenFiles()
         case .rename: showRename?(files)
         case .alias: confirmAliases(files)
-        case .screenshot: break
         }
     }
     private func actualDestination(_ context: MenuContext) -> URL {
@@ -522,10 +509,12 @@ final class AppModel: NSObject, ObservableObject {
     }
     private func recordRecent(_ directory: URL) { configuration.recent.removeAll { $0 == directory.path }; configuration.recent.insert(directory.path, at: 0); configuration.recent = Array(configuration.recent.prefix(5)) }
     func executeRename(_ entries: [RenameEntry], completion: @escaping () -> Void) {
-        guard !isWorking else { return }; _ = prepareOperation("批量重命名")
+        guard !isWorking else { return }
+        let token = prepareOperation("批量重命名")
+        let progress = progressCallback
         worker.async {
             do {
-                let journal = try self.operations.rename(entries)
+                let journal = try self.operations.rename(entries, cancellation: token, progress: progress)
                 var saved = true
                 do {
                     let data = try JSONEncoder().encode(journal)
@@ -534,6 +523,8 @@ final class AppModel: NSObject, ObservableObject {
                 } catch { saved = false }
                 let message = saved ? "重命名完成" : "重命名完成，恢复记录仅保存在本次会话"
                 DispatchQueue.main.async { self.renameRecordPersisted = saved; self.lastRename = journal; completion(); self.finishOperation(journal.entries.map { .init(source: $0.source, destination: $0.destination, status: .completed, message: message) }) }
+            } catch let error as CocoaError where error.code == .userCancelled {
+                DispatchQueue.main.async { self.finishRenameCancellation(entries.map(\.source)) }
             } catch { DispatchQueue.main.async { self.isWorking = false; self.showError(error) } }
         }
     }
@@ -541,13 +532,22 @@ final class AppModel: NSObject, ObservableObject {
         loadPresentationRecords()
         guard let journal = lastRename, !isWorking else { return }
         let alert = NSAlert(); alert.messageText = "恢复最近一次重命名？"; alert.informativeText = "仅恢复名称；文件内容改变或出现名称冲突时会停止。"; alert.addButton(withTitle: "恢复"); alert.addButton(withTitle: "取消")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }; _ = prepareOperation("恢复名称")
+        guard alert.runModal() == .alertFirstButtonReturn, !isWorking else { return }
+        let token = prepareOperation("恢复名称")
+        let progress = progressCallback
         worker.async {
             do {
-                let restored = try self.operations.restore(journal)
+                let restored = try self.operations.restore(journal, cancellation: token, progress: progress)
                 try? FileManager.default.removeItem(at: self.supportDirectory.appendingPathComponent("last-rename.json"))
                 DispatchQueue.main.async { self.lastRename = nil; self.finishOperation(restored.entries.map { .init(source: $0.source, destination: $0.destination, status: .completed, message: "名称已恢复") }) }
+            } catch let error as CocoaError where error.code == .userCancelled {
+                DispatchQueue.main.async { self.finishRenameCancellation(journal.entries.map(\.destination)) }
             } catch { DispatchQueue.main.async { self.isWorking = false; self.showError(error) } }
         }
+    }
+    private func finishRenameCancellation(_ sources: [String]) {
+        let items = sources.map { ItemResult(source: $0, status: .cancelled, message: "已取消，保留原名称") }
+        finishOperation(items, presentResults: false)
+        notice = "\(resultTitle)已取消，保留原名称。" + (operationRecordPersisted ? "" : "结果记录未能保存。")
     }
 }

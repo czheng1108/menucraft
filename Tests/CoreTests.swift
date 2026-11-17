@@ -192,6 +192,40 @@ struct CoreTests {
             _ = try engine.restore(journal)
             try expect(try read(a) == "A" && read(b) == "B", "Restore failed")
         }
+        try test("Rename and restore cancellation during verification preserve every name") { folder in
+            let a = folder.appendingPathComponent("A.txt")
+            let b = folder.appendingPathComponent("B.txt")
+            let newA = folder.appendingPathComponent("New A.txt")
+            let newB = folder.appendingPathComponent("New B.txt")
+            try write("A", a)
+            try write("B", b)
+            let entries = [RenameEntry(source: a.path, destination: newA.path),
+                           RenameEntry(source: b.path, destination: newB.path)]
+            let renameCancellation = CancellationToken()
+            do {
+                _ = try engine.rename(entries, cancellation: renameCancellation) { verified, _, _ in
+                    if verified == 1 { renameCancellation.cancel() }
+                }
+                throw TestFailure(description: "Rename continued after cancellation")
+            } catch let error as CocoaError where error.code == .userCancelled { }
+            try expect(try read(a) == "A" && read(b) == "B", "Cancelled rename changed the original files")
+            try expect(try Set(fm.contentsOfDirectory(atPath: folder.path)) == ["A.txt", "B.txt"],
+                       "Cancelled rename created a destination or staging file")
+
+            let journal = try engine.rename(entries)
+            let restoreCancellation = CancellationToken()
+            do {
+                _ = try engine.restore(journal, cancellation: restoreCancellation) { verified, _, _ in
+                    if verified == 1 { restoreCancellation.cancel() }
+                }
+                throw TestFailure(description: "Restore continued after cancellation")
+            } catch let error as CocoaError where error.code == .userCancelled { }
+            try expect(try read(newA) == "A" && read(newB) == "B", "Cancelled restore changed the current files")
+            try expect(try Set(fm.contentsOfDirectory(atPath: folder.path)) == ["New A.txt", "New B.txt"],
+                       "Cancelled restore created a destination or staging file")
+            _ = try engine.restore(journal)
+            try expect(try read(a) == "A" && read(b) == "B", "Cancelled restore made the journal unusable")
+        }
         try test("Rename conflicts leave original files unchanged") { folder in
             let a = folder.appendingPathComponent("A.txt"), b = folder.appendingPathComponent("B.txt")
             try write("A", a); try write("B", b)
@@ -235,7 +269,7 @@ struct CoreTests {
             var legacy = try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as! [String: Any]
             legacy.removeValue(forKey: "transferConflictPolicy")
             let migrated = try JSONDecoder().decode(AppConfiguration.self, from: JSONSerialization.data(withJSONObject: legacy))
-            try expect(migrated.version == 5 && migrated.enabled.contains(.newFolder) && migrated.enabled.contains(.screenshot) && !migrated.enabled.contains(.newFile), "Migration reset existing action choices")
+            try expect(migrated.version == 5 && migrated.enabled.contains(.newFolder) && !migrated.enabled.contains(.newFile), "Migration reset existing action choices")
             try expect(migrated.order.prefix(3) == [.cut, .newFolder, .newFile] && migrated.templates == original.templates && migrated.favorites == original.favorites, "Migration changed existing user settings")
             try expect(migrated.transferConflictPolicy == .keepBoth, "Legacy settings lost the safe transfer default")
             let store = ConfigurationStore(directory: folder)

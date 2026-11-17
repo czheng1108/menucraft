@@ -220,20 +220,23 @@ final class ArchiveEngine {
             try StagingCopy.copy(volume, to: input.appendingPathComponent(volume.lastPathComponent))
         }
         let stagedArchive = input.appendingPathComponent(archive.lastPathComponent)
-        func unpack(_ file: URL, into folder: URL, scale: Double, offset: Double) throws {
-            let validator = ArchiveListingValidator(password: password, allowStreamWithoutPath: ["bz2", "xz"].contains(file.pathExtension.lowercased()))
+        func unpack(_ file: URL, into folder: URL, scale: Double, offset: Double, allowStreamWithoutPath: Bool = false) throws {
+            let validator = ArchiveListingValidator(password: password, allowStreamWithoutPath: allowStreamWithoutPath)
             try run(["l","-slt","-ba","--",file.path], cwd: input, password: password, cancellation: cancellation, listing: validator)
             try validator.finish()
             try run(["x","-y","-aos","-bsp1","-o" + folder.path,"--",file.path], cwd: input, password: password, cancellation: cancellation) { progress(offset + $0 * scale, "解压中") }
         }
-        let compressedTar = ["tar.gz","tar.bz2","tar.xz","tgz","tbz","tbz2","txz"].contains { archive.lastPathComponent.lowercased().hasSuffix("." + $0) }
+        // Preserve the staged volume names so 7-Zip can find the other parts.
+        let archiveName = ArchiveFormat.nameWithoutFirstVolume(archive.lastPathComponent).lowercased()
+        let allowUnnamedStream = ["bz2", "tbz", "tbz2", "xz", "txz"].contains((archiveName as NSString).pathExtension)
+        let compressedTar = ["tar.gz","tar.bz2","tar.xz","tgz","tbz","tbz2","txz"].contains { archiveName.hasSuffix("." + $0) }
         if compressedTar {
             let outer = work.appendingPathComponent("outer"); try makeDirectory(outer)
-            try unpack(stagedArchive, into: outer, scale: 0.25, offset: 0.1)
+            try unpack(stagedArchive, into: outer, scale: 0.25, offset: 0.1, allowStreamWithoutPath: allowUnnamedStream)
             let members = try fm.contentsOfDirectory(at: outer, includingPropertiesForKeys: [.isRegularFileKey])
             guard members.count == 1, (try members[0].resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else { throw ArchiveError.failed("组合格式的 TAR 层无效。") }
             try unpack(members[0], into: contents, scale: 0.55, offset: 0.35)
-        } else { try unpack(stagedArchive, into: contents, scale: 0.8, offset: 0.1) }
+        } else { try unpack(stagedArchive, into: contents, scale: 0.8, offset: 0.1, allowStreamWithoutPath: allowUnnamedStream) }
         let rootPath = contents.resolvingSymlinksInPath().path
         if let enumerator = fm.enumerator(at: contents, includingPropertiesForKeys: [.isSymbolicLinkKey]) {
             for case let item as URL in enumerator {

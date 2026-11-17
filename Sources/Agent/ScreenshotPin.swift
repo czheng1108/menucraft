@@ -5,6 +5,7 @@ final class ScreenshotPin: NSObject {
     private let panel: ScreenshotPanel
     private let image: CGImage
     private let visibleFrame: CGRect
+    private var copyTask: Task<Void, Never>?
     var onClose: (() -> Void)?
 
     init(image: CGImage, screenFrame: CGRect) {
@@ -50,7 +51,11 @@ final class ScreenshotPin: NSObject {
     func show() { panel.orderFrontRegardless() }
 
     @objc func close() {
+        copyTask?.cancel()
+        copyTask = nil
         panel.orderOut(nil)
+        panel.contentView = nil
+        panel.close()
         onClose?()
     }
 
@@ -63,7 +68,15 @@ final class ScreenshotPin: NSObject {
         return button
     }
 
-    @objc private func copyImage() { try? ScreenshotOutput.copy(image) }
+    @objc private func copyImage() {
+        guard copyTask == nil else { return }
+        copyTask = Task { [weak self, image] in
+            let data = try? await ScreenshotOutput.exportPNG(image, to: .clipboard)
+            guard let self, !Task.isCancelled else { return }
+            copyTask = nil
+            if let data { try? ScreenshotOutput.copy(data, type: .png) }
+        }
+    }
     @objc private func zoomIn() { zoom(1.2) }
     @objc private func zoomOut() { zoom(1 / 1.2) }
 

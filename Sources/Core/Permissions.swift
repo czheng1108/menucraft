@@ -68,12 +68,3 @@ enum PermissionRequirements {
         return missing
     }
 }
-
-struct PermissionPromptState {
-    private var previous = Set<PermissionKind>()
-    mutating func shouldPresent(_ missing: Set<PermissionKind>) -> Bool {
-        let newlyMissing = missing.subtracting(previous)
-        previous = missing
-        return !newlyMissing.isEmpty
-    }
-}

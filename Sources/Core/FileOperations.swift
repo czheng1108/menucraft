@@ -19,6 +19,7 @@ final class CancellationToken: @unchecked Sendable {
     private var value = false
     private var observers: [UUID: () -> Void] = [:]
     var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func check() throws { if cancelled { throw CocoaError(.userCancelled) } }
     func cancel() {
         lock.lock(); value = true; let callbacks = Array(observers.values); observers.removeAll(); lock.unlock()
         callbacks.forEach { $0() }
@@ -194,11 +195,19 @@ final class FileOperations {
         return .init(items: results, sourceEmpty: empty && !cancellation.cancelled && results.allSatisfy { $0.status == .completed })
     }
     func validateRename(_ entries: [RenameEntry]) throws {
+        try validateRenamePaths(entries, cancellation: nil)
+        for entry in entries where entry.fingerprint != nil {
+            _ = try renameFingerprint(entry, cancellation: nil)
+        }
+    }
+    private func validateRenamePaths(_ entries: [RenameEntry], cancellation: CancellationToken?) throws {
+        try cancellation?.check()
         guard !entries.isEmpty else { throw CraftError.invalidRename("请先选择文件。") }
         let sourcePaths = Set(entries.map { URL(fileURLWithPath: $0.source).standardizedFileURL.path })
         guard sourcePaths.count == entries.count else { throw CraftError.invalidRename("所选文件重复。") }
         var destinationKeys = Set<String>()
         for entry in entries {
+            try cancellation?.check()
             let source = URL(fileURLWithPath: entry.source), target = URL(fileURLWithPath: entry.destination)
             try Self.validateName(target.lastPathComponent)
             guard source.deletingLastPathComponent().standardizedFileURL == target.deletingLastPathComponent().standardizedFileURL else { throw CraftError.invalidRename("重命名不能更改所在目录。") }
@@ -209,13 +218,27 @@ final class FileOperations {
             if exists(target), !sourcePaths.contains(target.standardizedFileURL.path) {
                 if !(source.standardizedFileURL.path.lowercased() == target.standardizedFileURL.path.lowercased() && !sensitive) { throw CraftError.collision(target.lastPathComponent) }
             }
-            if let expected = entry.fingerprint, try fingerprint(source) != expected { throw CraftError.invalidRename("文件内容已改变，不能恢复：\(source.lastPathComponent)") }
         }
     }
-    func rename(_ entries: [RenameEntry]) throws -> RenameJournal {
-        try validateRename(entries)
+    private func renameFingerprint(_ entry: RenameEntry, cancellation: CancellationToken?) throws -> String {
+        let source = URL(fileURLWithPath: entry.source)
+        let current = try fingerprint(source, cancellation: cancellation)
+        try cancellation?.check()
+        if let expected = entry.fingerprint, current != expected {
+            throw CraftError.invalidRename("文件内容已改变，不能恢复：\(source.lastPathComponent)")
+        }
+        return current
+    }
+    func rename(_ entries: [RenameEntry], cancellation: CancellationToken = CancellationToken(),
+                progress: ((Int, Int, String) -> Void)? = nil) throws -> RenameJournal {
+        try validateRenamePaths(entries, cancellation: cancellation)
         var prepared = entries
-        for index in prepared.indices { prepared[index].fingerprint = try fingerprint(URL(fileURLWithPath: prepared[index].source)) }
+        for (index, entry) in entries.enumerated() {
+            progress?(index, entries.count, URL(fileURLWithPath: entry.source).lastPathComponent)
+            prepared[index].fingerprint = try renameFingerprint(entry, cancellation: cancellation)
+        }
+        // Complete or roll back the whole transaction once the first source is staged.
+        try cancellation.check()
         var staged: [(entry: RenameEntry, temporary: URL, installed: Bool)] = []
         do {
             for entry in prepared {
@@ -243,8 +266,11 @@ final class FileOperations {
         }
         return .init(date: Date(), entries: prepared)
     }
-    func restore(_ journal: RenameJournal) throws -> RenameJournal {
-        try rename(journal.entries.map { .init(source: $0.destination, destination: $0.source, fingerprint: $0.fingerprint) })
+    func restore(_ journal: RenameJournal, cancellation: CancellationToken = CancellationToken(),
+                 progress: ((Int, Int, String) -> Void)? = nil) throws -> RenameJournal {
+        try cancellation.check()
+        return try rename(journal.entries.map { .init(source: $0.destination, destination: $0.source, fingerprint: $0.fingerprint) },
+                          cancellation: cancellation, progress: progress)
     }
     func createAlias(source: URL, directory: URL) throws -> URL {
         guard exists(source) else { throw CraftError.missingFile(source.path) }

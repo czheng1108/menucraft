@@ -5,24 +5,28 @@ struct ScreenshotSettingsView: View {
     @ObservedObject var model: AppModel
     @State private var keyMonitor: Any?
     @State private var keyHint: String?
-    @State private var recording: ScreenshotShortcutAction?
 
     var body: some View {
         SettingsSection(title: "快捷键") {
-            shortcutRow(.area)
-            SettingsDivider()
-            DisclosureGroup("其他全局快捷键") {
-                ForEach(ScreenshotShortcutAction.allCases.filter { $0 != .area }, id: \.self) { action in
-                    shortcutRow(action)
+            SettingsRow(title: "打开截图", subtitle: keyHint, symbol: "viewfinder") {
+                let shortcut = model.configuration.screenshot.shortcut
+                HStack {
+                    Button(keyMonitor == nil ? shortcut?.title ?? "设置快捷键…" : "按下组合键…", action: record)
+                    if keyMonitor == nil, shortcut != .standard {
+                        Button("恢复默认") { model.configuration.screenshot.shortcut = .standard }
+                    }
+                    if keyMonitor == nil, shortcut != nil {
+                        Button("清除") { model.configuration.screenshot.shortcut = nil }
+                    }
                 }
-            }.padding(.horizontal, 14).padding(.vertical, 9)
+            }
             if let error = model.screenshotShortcutError {
                 Text(error).font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14).padding(.bottom, 11)
             }
         }
         SettingsSection(title: "保存") {
-            SettingsRow(title: "PNG 保存目录", subtitle: model.configuration.screenshot.saveDirectory ?? "下载（默认）",
+            SettingsRow(title: "截图与录屏保存目录", subtitle: model.configuration.screenshot.saveDirectory ?? "下载（默认）",
                         symbol: "folder") {
                 HStack {
                     if model.configuration.screenshot.saveDirectory != nil {
@@ -39,25 +43,8 @@ struct ScreenshotSettingsView: View {
         .onDisappear(perform: stopRecording)
     }
 
-    private func shortcutRow(_ action: ScreenshotShortcutAction) -> some View {
-        let shortcut = model.configuration.screenshot.shortcut(for: action)
-        let isRecording = recording == action
-        return SettingsRow(title: action.title, subtitle: isRecording ? keyHint : nil, symbol: action == .area ? "viewfinder" : nil) {
-            HStack {
-                Button(isRecording ? "按下组合键…" : shortcut?.title ?? "设置快捷键…") { record(action) }
-                if !isRecording, action == .area, shortcut != .standard {
-                    Button("恢复默认") { model.configuration.screenshot.setShortcut(.standard, for: action) }
-                }
-                if !isRecording, shortcut != nil {
-                    Button("清除") { model.configuration.screenshot.setShortcut(nil, for: action) }
-                }
-            }
-        }
-    }
-
-    private func record(_ action: ScreenshotShortcutAction) {
+    private func record() {
         stopRecording()
-        recording = action
         keyHint = "按下字母或数字与修饰键的组合。Esc 取消。"
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 53 { stopRecording(); return nil }
@@ -72,7 +59,7 @@ struct ScreenshotSettingsView: View {
                 keyHint = "请选择带 Control、Option 或 Command 的字母或数字组合。"
                 return nil
             }
-            model.configuration.screenshot.setShortcut(shortcut, for: action)
+            model.configuration.screenshot.shortcut = shortcut
             stopRecording()
             return nil
         }
@@ -81,7 +68,6 @@ struct ScreenshotSettingsView: View {
     private func stopRecording() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
-        recording = nil
         keyHint = nil
     }
 }

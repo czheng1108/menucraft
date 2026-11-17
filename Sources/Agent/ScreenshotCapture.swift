@@ -3,10 +3,6 @@ import CoreMedia
 import ScreenCaptureKit
 import VideoToolbox
 
-enum ScreenshotMode {
-    case area, window, display, text
-}
-
 struct ScreenshotSnapshot {
     let image: ScreenshotImage
     let screenFrame: CGRect
@@ -65,26 +61,43 @@ enum ScreenshotCapture {
         configuration.width = max(1, Int((size.width * scale).rounded()))
         configuration.height = max(1, Int((size.height * scale).rounded()))
         configuration.showsCursor = false
+        configuration.capturesAudio = false
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.queueDepth = 3
         return configuration
     }
 
-    static func scrollStream(snapshot: ScreenshotSnapshot, selection: CGRect) async throws -> ScreenshotStream {
+    static func regionStream(snapshot: ScreenshotSnapshot, selection: CGRect, maximumSide: CGFloat? = nil,
+                             showsCursor: Bool = false) async throws -> ScreenshotStream {
+        let config = try regionConfiguration(image: snapshot.image, selection: selection, maximumSide: maximumSide,
+                                             showsCursor: showsCursor)
+        return try await regionStream(displayID: snapshot.displayID, configuration: config)
+    }
+
+    static func regionStream(displayID: CGDirectDisplayID, configuration: SCStreamConfiguration) async throws -> ScreenshotStream {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first(where: { $0.displayID == snapshot.displayID }) else {
+        guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
             throw ScreenshotError.displayUnavailable
         }
-        let pixels = snapshot.image.pixelRect(for: selection)
-        let scaleX = snapshot.image.scaleX
-        let scaleY = snapshot.image.scaleY
-        let config = configuration(size: pixels.size, scale: 1)
+        let own = content.applications.filter { $0.processID == getpid() }
+        let filter = SCContentFilter(display: display, excludingApplications: own, exceptingWindows: [])
+        return try await ScreenshotStream.start(filter: filter, configuration: configuration)
+    }
+
+    static func regionConfiguration(image: ScreenshotImage, selection: CGRect, maximumSide: CGFloat?,
+                                    showsCursor: Bool) throws -> SCStreamConfiguration {
+        let pixels = image.pixelRect(for: selection)
+        guard !pixels.isEmpty else { throw ScreenshotError.invalidImage }
+        let longestSide = max(pixels.width, pixels.height)
+        let scale = min(1, (maximumSide ?? longestSide) / longestSide)
+        let config = configuration(size: pixels.size, scale: scale)
+        let scaleX = image.scaleX
+        let scaleY = image.scaleY
         config.sourceRect = CGRect(x: pixels.minX / scaleX, y: pixels.minY / scaleY,
                                    width: pixels.width / scaleX, height: pixels.height / scaleY)
         config.minimumFrameInterval = CMTime(value: 1, timescale: 10)
-        let own = content.applications.filter { $0.processID == getpid() }
-        let filter = SCContentFilter(display: display, excludingApplications: own, exceptingWindows: [])
-        return try await ScreenshotStream.start(filter: filter, configuration: config)
+        config.showsCursor = showsCursor
+        return config
     }
 
     static func image(from sample: CMSampleBuffer) throws -> CGImage {
@@ -98,13 +111,16 @@ enum ScreenshotCapture {
 }
 
 final class ScreenshotStream: NSObject, SCStreamOutput, SCStreamDelegate {
-    let frames: AsyncThrowingStream<CGImage, Error>
-    private let continuation: AsyncThrowingStream<CGImage, Error>.Continuation
+    let samples: AsyncThrowingStream<CMSampleBuffer, Error>
+    private let continuation: AsyncThrowingStream<CMSampleBuffer, Error>.Continuation
     private var stream: SCStream?
+    var frames: AsyncCompactMapSequence<AsyncThrowingStream<CMSampleBuffer, Error>, CGImage> {
+        samples.compactMap { try? ScreenshotCapture.image(from: $0) }
+    }
 
     private override init() {
-        var output: AsyncThrowingStream<CGImage, Error>.Continuation!
-        frames = AsyncThrowingStream(bufferingPolicy: .bufferingNewest(1)) { output = $0 }
+        var output: AsyncThrowingStream<CMSampleBuffer, Error>.Continuation!
+        samples = AsyncThrowingStream(bufferingPolicy: .bufferingNewest(1)) { output = $0 }
         continuation = output
         super.init()
     }
@@ -136,8 +152,10 @@ final class ScreenshotStream: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    func finishFrames() { continuation.finish() }
+
     func stop() async {
-        continuation.finish()
+        finishFrames()
         let current = stream
         stream = nil
         try? await current?.stopCapture()
@@ -146,9 +164,8 @@ final class ScreenshotStream: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, sample.isValid, sample.imageBuffer != nil,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let status = attachments.first?[.status] as? Int, status == SCFrameStatus.complete.rawValue,
-              let image = try? ScreenshotCapture.image(from: sample) else { return }
-        continuation.yield(image)
+              let status = attachments.first?[.status] as? Int, status == SCFrameStatus.complete.rawValue else { return }
+        continuation.yield(sample)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {

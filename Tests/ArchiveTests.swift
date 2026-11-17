@@ -62,6 +62,53 @@ struct ArchiveTests {
             try fm.removeItem(at: parts[1]); try fails("Missing middle volume accepted") { _ = try engine.extract(parts[0], to: dir, password: "", cancellation: .init()) { _,_ in } }
             try check(try Data(contentsOf: file) == Data(bytes), "Original changed")
         }
+        try test("Split compressed TAR and single-file streams round-trip with the correct output name") { dir in
+            let input = try mkdir("输入", dir)
+            let file = input.appendingPathComponent("内容.bin")
+            let hidden = input.appendingPathComponent(".隐藏")
+            var seed: UInt64 = 0x123456789abcdef0
+            let payload = Data((0..<2_500_000).map { _ -> UInt8 in
+                seed ^= seed << 13
+                seed ^= seed >> 7
+                seed ^= seed << 17
+                return UInt8(truncatingIfNeeded: seed)
+            })
+            try payload.write(to: file)
+            try content.write(to: hidden)
+
+            let name = "资料 ' 归档"
+            for format in [ArchiveFormat.tarGzip, .tarBzip2, .tarXZ, .gzip, .bzip2, .xz] {
+                let output = try mkdir(format.rawValue, dir)
+                var options = ArchiveConfiguration()
+                options.format = format
+                options.level = 1
+                options.splitMB = 1
+                let files = format.needsTar ? [file, hidden] : [file]
+                let parts = try engine.compress(files, to: output, name: name, options: options, password: "", cancellation: .init()) { _,_ in }
+                try check(parts.count >= 3 && parts[0].lastPathComponent == "\(name).\(format.rawValue).001", "Expected three or more \(format.title) parts")
+                let destinations = try engine.extract(parts[0], to: output, password: "", cancellation: .init()) { _,_ in }
+                try check(destinations.count == 1 && destinations[0].lastPathComponent == name, "Incorrect extraction folder for \(format.title)")
+                let destination = destinations[0]
+                let items = try fm.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)
+                if format.needsTar {
+                    try check(Set(items.map(\.lastPathComponent)) == Set(files.map(\.lastPathComponent)), "The inner TAR was not unpacked")
+                    try check(try Data(contentsOf: destination.appendingPathComponent(file.lastPathComponent)) == payload, "Split TAR content changed")
+                    try check(try Data(contentsOf: destination.appendingPathComponent(hidden.lastPathComponent)) == content, "Split TAR lost its hidden file")
+                } else {
+                    try check(items.count == 1, "Single-file stream produced extra files")
+                    try check(try Data(contentsOf: items[0]) == payload, "Split stream content changed")
+                }
+
+                try fm.removeItem(at: parts[1])
+                do {
+                    _ = try engine.extract(parts[0], to: output, password: "", cancellation: .init()) { _,_ in }
+                    try check(false, "Missing \(format.title) part accepted")
+                } catch ArchiveError.missingVolume {}
+                let remaining = try fm.contentsOfDirectory(at: output, includingPropertiesForKeys: nil)
+                try check(Set(remaining.map(\.lastPathComponent)) == Set((parts.filter { $0 != parts[1] } + destinations).map(\.lastPathComponent)),
+                          "Failed extraction left files in the output folder")
+            }
+        }
         try test("Cancel running engine and clean temporary data") { dir in
             let file = dir.appendingPathComponent("large.bin"); try Data(repeating: 73, count: 16_000_000).write(to: file)
             let token = CancellationToken(); DispatchQueue.global().asyncAfter(deadline: .now() + 0.01) { token.cancel() }
@@ -85,8 +132,8 @@ struct ArchiveTests {
         try test("v1 settings migration retains templates, IDs and disabled actions") { _ in
             let old = Data(#"{"version":1,"order":["copyPath","newFile","hidden"],"enabled":["copyPath"],"templates":[{"id":"mine","title":"Mine","filename":"a.txt","content":"private"}],"favorites":[{"id":"keep","name":"Custom","path":"/tmp"}],"grouped":false}"#.utf8)
             let config = try JSONDecoder().decode(AppConfiguration.self, from: old)
-            try check(config.enabled.filter { $0 != .screenshot } == [.copyPath,.newFolder,.compress,.extract]
-                      && config.enabled.contains(.screenshot) && config.templates[0].id == "mine"
+            try check(config.enabled == [.copyPath,.newFolder,.compress,.extract]
+                      && config.templates[0].id == "mine"
                       && config.favorites[0].id == "keep" && !config.grouped, "Migration discarded config")
             let scroll = ScrollConfiguration.migrated(["InvertScrollingOn":true,"ReverseTrackpad":false])
             try check(scroll.enabled && scroll.mouse && !scroll.trackpad && scroll.vertical && !scroll.horizontal && scroll.step == 3, "Scroll migration changed preferences")

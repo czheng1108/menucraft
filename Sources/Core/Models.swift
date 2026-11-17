@@ -1,13 +1,12 @@
 import Foundation
 
 enum ActionID: String, Codable, CaseIterable {
-    case newFolder, newFile, screenshot, copyPath, copyName, terminal, openApp, favorite, cut, paste, transfer, dissolve, compress, extract, hidden, rename, alias
+    case newFolder, newFile, copyPath, copyName, terminal, openApp, favorite, cut, paste, transfer, dissolve, compress, extract, hidden, rename, alias
 
     var title: String {
         switch self {
         case .newFolder: return "新建文件夹"
         case .newFile: return "新建文件"
-        case .screenshot: return "截图到此文件夹"
         case .copyPath: return "复制路径"
         case .copyName: return "复制文件名"
         case .terminal: return "在终端中打开"
@@ -28,7 +27,6 @@ enum ActionID: String, Codable, CaseIterable {
         switch self {
         case .newFolder: return "folder.badge.plus"
         case .newFile: return "doc.badge.plus"
-        case .screenshot: return "viewfinder"
         case .copyPath: return "point.topleft.down.curvedto.point.bottomright.up"
         case .copyName: return "doc.on.doc"
         case .terminal: return "terminal"
@@ -47,7 +45,7 @@ enum ActionID: String, Codable, CaseIterable {
     }
     var group: Int {
         switch self {
-        case .newFolder, .newFile, .screenshot, .copyPath, .copyName: return 0
+        case .newFolder, .newFile, .copyPath, .copyName: return 0
         case .terminal, .openApp, .favorite: return 1
         case .cut, .paste, .transfer, .dissolve, .compress, .extract: return 2
         case .hidden: return 3
@@ -172,10 +170,6 @@ struct AppConfiguration: Codable, Equatable {
             if !enabled.contains(.newFolder) { enabled.append(.newFolder) }
             if !order.contains(.newFolder) { order.insert(.newFolder, at: order.firstIndex(of: .newFile) ?? 0) }
         }
-        if version < 5 {
-            if !enabled.contains(.screenshot) { enabled.append(.screenshot) }
-            if !order.contains(.screenshot) { order.insert(.screenshot, at: order.firstIndex(of: .copyPath) ?? order.count) }
-        }
         version = 5
         order = order.reduce(into: []) { if !$0.contains($1) { $0.append($1) } }
         order += ActionID.allCases.filter { !order.contains($0) }
@@ -204,7 +198,6 @@ struct MenuContext: Codable, Equatable {
     func applies(_ action: ActionID, cutCount: Int) -> Bool {
         switch action {
         case .newFolder: return isBackground || (singleDirectory && selection.count == 1)
-        case .screenshot: return isBackground
         case .favorite, .dissolve: return singleDirectory && selection.count == 1 && !isBackground
         case .copyName, .cut, .transfer, .alias, .compress: return !selection.isEmpty && !isBackground
         case .extract: return !isBackground && !selection.isEmpty && !singleDirectory && selection.allSatisfy { ArchiveFormat.isArchive($0) }
